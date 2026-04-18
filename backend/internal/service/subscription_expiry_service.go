@@ -5,6 +5,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/safe"
 )
 
 // SubscriptionExpiryService periodically updates expired subscription status.
@@ -29,21 +31,21 @@ func (s *SubscriptionExpiryService) Start() {
 		return
 	}
 	s.wg.Add(1)
-	go func() {
+	safe.Go("service.subscription_expiry.worker", func() {
 		defer s.wg.Done()
 		ticker := time.NewTicker(s.interval)
 		defer ticker.Stop()
 
-		s.runOnce()
+		safe.Do("service.subscription_expiry.run_once", s.runOnce)
 		for {
 			select {
 			case <-ticker.C:
-				s.runOnce()
+				safe.Do("service.subscription_expiry.run_once", s.runOnce)
 			case <-s.stopCh:
 				return
 			}
 		}
-	}()
+	})
 }
 
 func (s *SubscriptionExpiryService) Stop() {

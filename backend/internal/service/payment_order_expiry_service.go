@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/safe"
 )
 
 const expiryCheckTimeout = 30 * time.Second
@@ -31,21 +33,21 @@ func (s *PaymentOrderExpiryService) Start() {
 		return
 	}
 	s.wg.Add(1)
-	go func() {
+	safe.Go("service.payment_order_expiry.worker", func() {
 		defer s.wg.Done()
 		ticker := time.NewTicker(s.interval)
 		defer ticker.Stop()
 
-		s.runOnce()
+		s.runOnceSafe()
 		for {
 			select {
 			case <-ticker.C:
-				s.runOnce()
+				s.runOnceSafe()
 			case <-s.stopCh:
 				return
 			}
 		}
-	}()
+	})
 }
 
 func (s *PaymentOrderExpiryService) Stop() {
@@ -70,4 +72,8 @@ func (s *PaymentOrderExpiryService) runOnce() {
 	if expired > 0 {
 		slog.Info("[PaymentOrderExpiry] expired timed-out orders", "count", expired)
 	}
+}
+
+func (s *PaymentOrderExpiryService) runOnceSafe() {
+	safe.Do("service.payment_order_expiry.run_once", s.runOnce)
 }

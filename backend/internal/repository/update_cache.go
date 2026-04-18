@@ -19,9 +19,15 @@ func NewUpdateCache(rdb *redis.Client) service.UpdateCache {
 }
 
 func (c *updateCache) GetUpdateInfo(ctx context.Context) (string, error) {
+	if c == nil || c.rdb == nil {
+		return "", redis.Nil
+	}
 	return c.rdb.Get(ctx, updateCacheKey).Result()
 }
 
 func (c *updateCache) SetUpdateInfo(ctx context.Context, data string, ttl time.Duration) error {
+	if c == nil || c.rdb == nil {
+		return nil
+	}
 	return c.rdb.Set(ctx, updateCacheKey, data, ttl).Err()
 }

@@ -1405,6 +1405,20 @@ func (r *usageLogRepository) GetUserStats(ctx context.Context, userID int64, sta
 type DashboardStats = usagestats.DashboardStats
 
 func (r *usageLogRepository) GetDashboardStats(ctx context.Context) (*DashboardStats, error) {
+	if isH2Storage() {
+		stats := &DashboardStats{}
+		now := timezone.Now()
+		todayStart := timezone.Today()
+		if err := r.fillDashboardEntityStats(ctx, stats, todayStart, now); err != nil {
+			return nil, err
+		}
+		rpm, tpm, err := r.getPerformanceStats(ctx, 0)
+		if err == nil {
+			stats.Rpm = rpm
+			stats.Tpm = tpm
+		}
+		return stats, nil
+	}
 	stats := &DashboardStats{}
 	now := timezone.Now()
 	todayStart := timezone.Today()
@@ -1427,6 +1441,20 @@ func (r *usageLogRepository) GetDashboardStats(ctx context.Context) (*DashboardS
 }
 
 func (r *usageLogRepository) GetDashboardStatsWithRange(ctx context.Context, start, end time.Time) (*DashboardStats, error) {
+	if isH2Storage() {
+		stats := &DashboardStats{}
+		now := timezone.Now()
+		todayStart := timezone.Today()
+		if err := r.fillDashboardEntityStats(ctx, stats, todayStart, now); err != nil {
+			return nil, err
+		}
+		rpm, tpm, err := r.getPerformanceStats(ctx, 0)
+		if err == nil {
+			stats.Rpm = rpm
+			stats.Tpm = tpm
+		}
+		return stats, nil
+	}
 	startUTC := start.UTC()
 	endUTC := end.UTC()
 	if !endUTC.After(startUTC) {
@@ -2213,6 +2241,9 @@ func (r *usageLogRepository) GetAPIKeyUsageTrend(ctx context.Context, startTime,
 
 // GetUserUsageTrend returns usage trend data grouped by user and date
 func (r *usageLogRepository) GetUserUsageTrend(ctx context.Context, startTime, endTime time.Time, granularity string, limit int) (results []UserUsageTrendPoint, err error) {
+	if isH2Storage() {
+		return []UserUsageTrendPoint{}, nil
+	}
 	dateFormat := safeDateFormat(granularity)
 
 	query := fmt.Sprintf(`
@@ -2553,6 +2584,9 @@ func (r *usageLogRepository) GetAPIKeyDashboardStats(ctx context.Context, apiKey
 
 // GetUserUsageTrendByUserID 获取指定用户的使用趋势
 func (r *usageLogRepository) GetUserUsageTrendByUserID(ctx context.Context, userID int64, startTime, endTime time.Time, granularity string) (results []TrendDataPoint, err error) {
+	if isH2Storage() {
+		return []TrendDataPoint{}, nil
+	}
 	dateFormat := safeDateFormat(granularity)
 
 	query := fmt.Sprintf(`
@@ -2852,6 +2886,9 @@ func (r *usageLogRepository) GetBatchAPIKeyUsageStats(ctx context.Context, apiKe
 
 // GetUsageTrendWithFilters returns usage trend data with optional filters
 func (r *usageLogRepository) GetUsageTrendWithFilters(ctx context.Context, startTime, endTime time.Time, granularity string, userID, apiKeyID, accountID, groupID int64, model string, requestType *int16, stream *bool, billingType *int8) (results []TrendDataPoint, err error) {
+	if isH2Storage() {
+		return []TrendDataPoint{}, nil
+	}
 	if shouldUsePreaggregatedTrend(granularity, userID, apiKeyID, accountID, groupID, model, requestType, stream, billingType) {
 		aggregated, aggregatedErr := r.getUsageTrendFromAggregates(ctx, startTime, endTime, granularity)
 		if aggregatedErr == nil && len(aggregated) > 0 {
@@ -2997,12 +3034,18 @@ func (r *usageLogRepository) getUsageTrendFromAggregates(ctx context.Context, st
 
 // GetModelStatsWithFilters returns model statistics with optional filters
 func (r *usageLogRepository) GetModelStatsWithFilters(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, accountID, groupID int64, requestType *int16, stream *bool, billingType *int8) (results []ModelStat, err error) {
+	if isH2Storage() {
+		return []ModelStat{}, nil
+	}
 	return r.getModelStatsWithFiltersBySource(ctx, startTime, endTime, userID, apiKeyID, accountID, groupID, requestType, stream, billingType, usagestats.ModelSourceRequested)
 }
 
 // GetModelStatsWithFiltersBySource returns model statistics with optional filters and model source dimension.
 // source: requested | upstream | mapping.
 func (r *usageLogRepository) GetModelStatsWithFiltersBySource(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, accountID, groupID int64, requestType *int16, stream *bool, billingType *int8, source string) (results []ModelStat, err error) {
+	if isH2Storage() {
+		return []ModelStat{}, nil
+	}
 	return r.getModelStatsWithFiltersBySource(ctx, startTime, endTime, userID, apiKeyID, accountID, groupID, requestType, stream, billingType, source)
 }
 
@@ -3077,6 +3120,9 @@ func (r *usageLogRepository) getModelStatsWithFiltersBySource(ctx context.Contex
 
 // GetGroupStatsWithFilters returns group usage statistics with optional filters
 func (r *usageLogRepository) GetGroupStatsWithFilters(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, accountID, groupID int64, requestType *int16, stream *bool, billingType *int8) (results []usagestats.GroupStat, err error) {
+	if isH2Storage() {
+		return []usagestats.GroupStat{}, nil
+	}
 	query := `
 		SELECT
 			COALESCE(ul.group_id, 0) as group_id,

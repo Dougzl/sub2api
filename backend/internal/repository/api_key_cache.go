@@ -37,6 +37,9 @@ func NewAPIKeyCache(rdb *redis.Client) service.APIKeyCache {
 }
 
 func (c *apiKeyCache) GetCreateAttemptCount(ctx context.Context, userID int64) (int, error) {
+	if c == nil || c.rdb == nil {
+		return 0, nil
+	}
 	key := apiKeyRateLimitKey(userID)
 	count, err := c.rdb.Get(ctx, key).Int()
 	if errors.Is(err, redis.Nil) {
@@ -46,6 +49,9 @@ func (c *apiKeyCache) GetCreateAttemptCount(ctx context.Context, userID int64) (
 }
 
 func (c *apiKeyCache) IncrementCreateAttemptCount(ctx context.Context, userID int64) error {
+	if c == nil || c.rdb == nil {
+		return nil
+	}
 	key := apiKeyRateLimitKey(userID)
 	pipe := c.rdb.Pipeline()
 	pipe.Incr(ctx, key)
@@ -55,19 +61,31 @@ func (c *apiKeyCache) IncrementCreateAttemptCount(ctx context.Context, userID in
 }
 
 func (c *apiKeyCache) DeleteCreateAttemptCount(ctx context.Context, userID int64) error {
+	if c == nil || c.rdb == nil {
+		return nil
+	}
 	key := apiKeyRateLimitKey(userID)
 	return c.rdb.Del(ctx, key).Err()
 }
 
 func (c *apiKeyCache) IncrementDailyUsage(ctx context.Context, apiKey string) error {
+	if c == nil || c.rdb == nil {
+		return nil
+	}
 	return c.rdb.Incr(ctx, apiKey).Err()
 }
 
 func (c *apiKeyCache) SetDailyUsageExpiry(ctx context.Context, apiKey string, ttl time.Duration) error {
+	if c == nil || c.rdb == nil {
+		return nil
+	}
 	return c.rdb.Expire(ctx, apiKey, ttl).Err()
 }
 
 func (c *apiKeyCache) GetAuthCache(ctx context.Context, key string) (*service.APIKeyAuthCacheEntry, error) {
+	if c == nil || c.rdb == nil {
+		return nil, redis.Nil
+	}
 	val, err := c.rdb.Get(ctx, apiKeyAuthCacheKey(key)).Bytes()
 	if err != nil {
 		return nil, err
@@ -80,6 +98,9 @@ func (c *apiKeyCache) GetAuthCache(ctx context.Context, key string) (*service.AP
 }
 
 func (c *apiKeyCache) SetAuthCache(ctx context.Context, key string, entry *service.APIKeyAuthCacheEntry, ttl time.Duration) error {
+	if c == nil || c.rdb == nil {
+		return nil
+	}
 	if entry == nil {
 		return nil
 	}
@@ -91,16 +112,25 @@ func (c *apiKeyCache) SetAuthCache(ctx context.Context, key string, entry *servi
 }
 
 func (c *apiKeyCache) DeleteAuthCache(ctx context.Context, key string) error {
+	if c == nil || c.rdb == nil {
+		return nil
+	}
 	return c.rdb.Del(ctx, apiKeyAuthCacheKey(key)).Err()
 }
 
 // PublishAuthCacheInvalidation publishes a cache invalidation message to all instances
 func (c *apiKeyCache) PublishAuthCacheInvalidation(ctx context.Context, cacheKey string) error {
+	if c == nil || c.rdb == nil {
+		return nil
+	}
 	return c.rdb.Publish(ctx, authCacheInvalidateChannel, cacheKey).Err()
 }
 
 // SubscribeAuthCacheInvalidation subscribes to cache invalidation messages
 func (c *apiKeyCache) SubscribeAuthCacheInvalidation(ctx context.Context, handler func(cacheKey string)) error {
+	if c == nil || c.rdb == nil {
+		return nil
+	}
 	pubsub := c.rdb.Subscribe(ctx, authCacheInvalidateChannel)
 
 	// Verify subscription is working

@@ -1,0 +1,4 @@
+{"file": ".claude/commands/trellis/finish-work.md", "reason": "Finish work checklist"}
+{"file": ".claude/commands/trellis/check.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/backend/index.md", "reason": "backend storage rewrite review"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "cross-layer storage/config/deploy review"}

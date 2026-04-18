@@ -7,6 +7,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/safe"
 	"github.com/robfig/cron/v3"
 )
 
@@ -56,7 +57,7 @@ func (s *ScheduledTestRunnerService) Start() {
 		}
 
 		c := cron.New(cron.WithParser(scheduledTestCronParser), cron.WithLocation(loc))
-		_, err := c.AddFunc("* * * * *", func() { s.runScheduled() })
+		_, err := c.AddFunc("* * * * *", func() { safe.Do("service.scheduled_test_runner.tick", s.runScheduled) })
 		if err != nil {
 			logger.LegacyPrintf("service.scheduled_test_runner", "[ScheduledTestRunner] not started (invalid schedule): %v", err)
 			return
@@ -109,11 +110,11 @@ func (s *ScheduledTestRunnerService) runScheduled() {
 	for _, plan := range plans {
 		sem <- struct{}{}
 		wg.Add(1)
-		go func(p *ScheduledTestPlan) {
+		safe.Go("service.scheduled_test_runner.plan", func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			s.runOnePlan(ctx, p)
-		}(plan)
+			s.runOnePlan(ctx, plan)
+		})
 	}
 
 	wg.Wait()

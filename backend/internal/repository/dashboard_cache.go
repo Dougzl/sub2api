@@ -32,6 +32,9 @@ func NewDashboardCache(rdb *redis.Client, cfg *config.Config) service.DashboardS
 }
 
 func (c *dashboardCache) GetDashboardStats(ctx context.Context) (string, error) {
+	if c == nil || c.rdb == nil {
+		return "", service.ErrDashboardStatsCacheMiss
+	}
 	val, err := c.rdb.Get(ctx, c.buildKey()).Result()
 	if err != nil {
 		if err == redis.Nil {
@@ -43,6 +46,9 @@ func (c *dashboardCache) GetDashboardStats(ctx context.Context) (string, error) 
 }
 
 func (c *dashboardCache) SetDashboardStats(ctx context.Context, data string, ttl time.Duration) error {
+	if c == nil || c.rdb == nil {
+		return nil
+	}
 	return c.rdb.Set(ctx, c.buildKey(), data, ttl).Err()
 }
 
@@ -54,5 +60,8 @@ func (c *dashboardCache) buildKey() string {
 }
 
 func (c *dashboardCache) DeleteDashboardStats(ctx context.Context) error {
+	if c == nil || c.rdb == nil {
+		return nil
+	}
 	return c.rdb.Del(ctx, c.buildKey()).Err()
 }

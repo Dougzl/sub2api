@@ -33,6 +33,9 @@ func NewTLSFingerprintProfileCache(rdb *redis.Client) service.TLSFingerprintProf
 
 // Get 从缓存获取模板列表
 func (c *tlsFingerprintProfileCache) Get(ctx context.Context) ([]*model.TLSFingerprintProfile, bool) {
+	if c == nil {
+		return nil, false
+	}
 	c.localMu.RLock()
 	if c.localCache != nil {
 		profiles := c.localCache
@@ -41,6 +44,9 @@ func (c *tlsFingerprintProfileCache) Get(ctx context.Context) ([]*model.TLSFinge
 	}
 	c.localMu.RUnlock()
 
+	if c.rdb == nil {
+		return nil, false
+	}
 	data, err := c.rdb.Get(ctx, tlsFPProfileCacheKey).Bytes()
 	if err != nil {
 		if err != redis.Nil {
@@ -64,13 +70,18 @@ func (c *tlsFingerprintProfileCache) Get(ctx context.Context) ([]*model.TLSFinge
 
 // Set 设置缓存
 func (c *tlsFingerprintProfileCache) Set(ctx context.Context, profiles []*model.TLSFingerprintProfile) error {
+	if c == nil {
+		return nil
+	}
 	data, err := json.Marshal(profiles)
 	if err != nil {
 		return err
 	}
 
-	if err := c.rdb.Set(ctx, tlsFPProfileCacheKey, data, tlsFPProfileCacheTTL).Err(); err != nil {
-		return err
+	if c.rdb != nil {
+		if err := c.rdb.Set(ctx, tlsFPProfileCacheKey, data, tlsFPProfileCacheTTL).Err(); err != nil {
+			return err
+		}
 	}
 
 	c.localMu.Lock()
@@ -82,20 +93,32 @@ func (c *tlsFingerprintProfileCache) Set(ctx context.Context, profiles []*model.
 
 // Invalidate 使缓存失效
 func (c *tlsFingerprintProfileCache) Invalidate(ctx context.Context) error {
+	if c == nil {
+		return nil
+	}
 	c.localMu.Lock()
 	c.localCache = nil
 	c.localMu.Unlock()
 
+	if c.rdb == nil {
+		return nil
+	}
 	return c.rdb.Del(ctx, tlsFPProfileCacheKey).Err()
 }
 
 // NotifyUpdate 通知其他实例刷新缓存
 func (c *tlsFingerprintProfileCache) NotifyUpdate(ctx context.Context) error {
+	if c == nil || c.rdb == nil {
+		return nil
+	}
 	return c.rdb.Publish(ctx, tlsFPProfilePubSubKey, "refresh").Err()
 }
 
 // SubscribeUpdates 订阅缓存更新通知
 func (c *tlsFingerprintProfileCache) SubscribeUpdates(ctx context.Context, handler func()) {
+	if c == nil || c.rdb == nil {
+		return
+	}
 	go func() {
 		sub := c.rdb.Subscribe(ctx, tlsFPProfilePubSubKey)
 		defer func() { _ = sub.Close() }()

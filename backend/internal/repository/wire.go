@@ -15,6 +15,9 @@ import (
 // ProvideConcurrencyCache 创建并发控制缓存，从配置读取 TTL 参数
 // 性能优化：TTL 可配置，支持长时间运行的 LLM 请求场景
 func ProvideConcurrencyCache(rdb *redis.Client, cfg *config.Config) service.ConcurrencyCache {
+	if rdb == nil {
+		return noopConcurrencyCache{}
+	}
 	waitTTLSeconds := int(cfg.Gateway.Scheduling.StickySessionWaitTimeout.Seconds())
 	if cfg.Gateway.Scheduling.FallbackWaitTimeout > cfg.Gateway.Scheduling.StickySessionWaitTimeout {
 		waitTTLSeconds = int(cfg.Gateway.Scheduling.FallbackWaitTimeout.Seconds())
@@ -40,6 +43,9 @@ func ProvidePricingRemoteClient(cfg *config.Config) service.PricingRemoteClient 
 // ProvideSessionLimitCache 创建会话限制缓存
 // 用于 Anthropic OAuth/SetupToken 账号的并发会话数量控制
 func ProvideSessionLimitCache(rdb *redis.Client, cfg *config.Config) service.SessionLimitCache {
+	if rdb == nil {
+		return NewSessionLimitCache(nil, 5)
+	}
 	defaultIdleTimeoutMinutes := 5 // 默认 5 分钟空闲超时
 	if cfg != nil && cfg.Gateway.SessionIdleTimeoutMinutes > 0 {
 		defaultIdleTimeoutMinutes = cfg.Gateway.SessionIdleTimeoutMinutes
@@ -49,6 +55,9 @@ func ProvideSessionLimitCache(rdb *redis.Client, cfg *config.Config) service.Ses
 
 // ProvideSchedulerCache 创建调度快照缓存，并注入快照分块参数。
 func ProvideSchedulerCache(rdb *redis.Client, cfg *config.Config) service.SchedulerCache {
+	if rdb == nil {
+		return noopSchedulerCache{}
+	}
 	mgetChunkSize := defaultSchedulerSnapshotMGetChunkSize
 	writeChunkSize := defaultSchedulerSnapshotWriteChunkSize
 	if cfg != nil {
@@ -111,7 +120,7 @@ var ProviderSet = wire.NewSet(
 	NewSchedulerOutboxRepository,
 	NewProxyLatencyCache,
 	NewTotpCache,
-	NewRefreshTokenCache,
+	ProvideRefreshTokenCache,
 	NewErrorPassthroughCache,
 	NewTLSFingerprintProfileCache,
 
@@ -188,4 +197,11 @@ func ProvideSQLDB(client *ent.Client) (*sql.DB, error) {
 // 提供：*redis.Client
 func ProvideRedis(cfg *config.Config) *redis.Client {
 	return InitRedis(cfg)
+}
+
+func ProvideRefreshTokenCache(rdb *redis.Client, db *sql.DB, cfg *config.Config) service.RefreshTokenCache {
+	if cfg != nil && stringsEqualFold(cfg.Database.Engine, "sqlite") {
+		return NewSQLiteRefreshTokenCache(db)
+	}
+	return NewRefreshTokenCache(rdb)
 }

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	_ "time/tzdata"
 
 	_ "github.com/Wei-Shaw/sub2api/ent/runtime"
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -85,6 +86,8 @@ func main() {
 				log.Fatalf("Auto setup failed: %v", err)
 			}
 			// Continue to main server after auto-setup
+		} else if setup.ShouldUseUnifiedSQLiteSetup() {
+			log.Println("First run detected, starting unified SQLite setup/main server...")
 		} else {
 			log.Println("First run detected, starting setup wizard...")
 			runSetupServer()

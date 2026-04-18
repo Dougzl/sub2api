@@ -5,6 +5,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/safe"
 )
 
 // AccountExpiryService periodically pauses expired accounts when auto-pause is enabled.
@@ -29,21 +31,21 @@ func (s *AccountExpiryService) Start() {
 		return
 	}
 	s.wg.Add(1)
-	go func() {
+	safe.Go("service.account_expiry.worker", func() {
 		defer s.wg.Done()
 		ticker := time.NewTicker(s.interval)
 		defer ticker.Stop()
 
-		s.runOnce()
+		safe.Do("service.account_expiry.run_once", s.runOnce)
 		for {
 			select {
 			case <-ticker.C:
-				s.runOnce()
+				safe.Do("service.account_expiry.run_once", s.runOnce)
 			case <-s.stopCh:
 				return
 			}
 		}
-	}()
+	})
 }
 
 func (s *AccountExpiryService) Stop() {

@@ -47,7 +47,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	userRepository := repository.NewUserRepository(client, db)
 	redeemCodeRepository := repository.NewRedeemCodeRepository(client)
 	redisClient := repository.ProvideRedis(configConfig)
-	refreshTokenCache := repository.NewRefreshTokenCache(redisClient)
+	refreshTokenCache := repository.ProvideRefreshTokenCache(redisClient, db, configConfig)
 	settingRepository := repository.NewSettingRepository(client)
 	groupRepository := repository.NewGroupRepository(client, db)
 	proxyRepository := repository.NewProxyRepository(client, db)

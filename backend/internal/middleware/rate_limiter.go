@@ -88,6 +88,10 @@ func (r *RateLimiter) LimitWithOptions(key string, limit int, window time.Durati
 	}
 
 	return func(c *gin.Context) {
+		if r == nil || r.redis == nil {
+			c.Next()
+			return
+		}
 		ip := c.ClientIP()
 		redisKey := r.prefix + key + ":" + ip
 

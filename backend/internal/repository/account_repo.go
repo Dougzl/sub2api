@@ -480,7 +480,7 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 					col := s.C("temp_unschedulable_until")
 					s.Where(entsql.Or(
 						entsql.IsNull(col),
-						entsql.LTE(col, entsql.Expr("NOW()")),
+						entsql.LTE(col, time.Now()),
 					))
 				}),
 			)
@@ -492,7 +492,7 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 					col := s.C("temp_unschedulable_until")
 					s.Where(entsql.Or(
 						entsql.IsNull(col),
-						entsql.LTE(col, entsql.Expr("NOW()")),
+						entsql.LTE(col, time.Now()),
 					))
 				}),
 			)
@@ -503,7 +503,7 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 					col := s.C("temp_unschedulable_until")
 					s.Where(entsql.And(
 						entsql.Not(entsql.IsNull(col)),
-						entsql.GT(col, entsql.Expr("NOW()")),
+						entsql.GT(col, time.Now()),
 					))
 				}),
 			)
@@ -519,7 +519,7 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 					col := s.C("temp_unschedulable_until")
 					s.Where(entsql.Or(
 						entsql.IsNull(col),
-						entsql.LTE(col, entsql.Expr("NOW()")),
+						entsql.LTE(col, time.Now()),
 					))
 				}),
 			)
@@ -1267,13 +1267,13 @@ func (r *accountRepository) AutoPauseExpiredAccounts(ctx context.Context, now ti
 	result, err := r.sql.ExecContext(ctx, `
 		UPDATE accounts
 		SET schedulable = FALSE,
-			updated_at = NOW()
+			updated_at = $2
 		WHERE deleted_at IS NULL
 			AND schedulable = TRUE
 			AND auto_pause_on_expired = TRUE
 			AND expires_at IS NOT NULL
 			AND expires_at <= $1
-	`, now)
+	`, now, time.Now())
 	if err != nil {
 		return 0, err
 	}
@@ -1596,7 +1596,7 @@ func tempUnschedulablePredicate() dbpredicate.Account {
 		col := s.C("temp_unschedulable_until")
 		s.Where(entsql.Or(
 			entsql.IsNull(col),
-			entsql.LTE(col, entsql.Expr("NOW()")),
+			entsql.LTE(col, time.Now()),
 		))
 	})
 }

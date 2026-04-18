@@ -66,6 +66,16 @@ func (r *userGroupRateRepository) GetByUserIDs(ctx context.Context, userIDs []in
 	if len(uniqueIDs) == 0 {
 		return result, nil
 	}
+	if isH2Storage() {
+		for _, userID := range uniqueIDs {
+			rates, err := r.GetByUserID(ctx, userID)
+			if err != nil {
+				return nil, err
+			}
+			result[userID] = rates
+		}
+		return result, nil
+	}
 
 	rows, err := r.sql.QueryContext(ctx, `
 		SELECT user_id, group_id, rate_multiplier

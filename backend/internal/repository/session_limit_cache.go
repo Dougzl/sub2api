@@ -155,17 +155,19 @@ func NewSessionLimitCache(rdb *redis.Client, defaultIdleTimeoutMinutes int) serv
 		defaultIdleTimeoutMinutes = 5 // 默认 5 分钟
 	}
 
-	// 预加载 Lua 脚本到 Redis，避免 Pipeline 中出现 NOSCRIPT 错误
-	ctx := context.Background()
-	scripts := []*redis.Script{
-		registerSessionScript,
-		refreshSessionScript,
-		getActiveSessionCountScript,
-		isSessionActiveScript,
-	}
-	for _, script := range scripts {
-		if err := script.Load(ctx, rdb).Err(); err != nil {
-			log.Printf("[SessionLimitCache] Failed to preload Lua script: %v", err)
+	if rdb != nil {
+		// 预加载 Lua 脚本到 Redis，避免 Pipeline 中出现 NOSCRIPT 错误
+		ctx := context.Background()
+		scripts := []*redis.Script{
+			registerSessionScript,
+			refreshSessionScript,
+			getActiveSessionCountScript,
+			isSessionActiveScript,
+		}
+		for _, script := range scripts {
+			if err := script.Load(ctx, rdb).Err(); err != nil {
+				log.Printf("[SessionLimitCache] Failed to preload Lua script: %v", err)
+			}
 		}
 	}
 
@@ -187,6 +189,9 @@ func windowCostKey(accountID int64) string {
 
 // RegisterSession 注册会话活动
 func (c *sessionLimitCache) RegisterSession(ctx context.Context, accountID int64, sessionUUID string, maxSessions int, idleTimeout time.Duration) (bool, error) {
+	if c == nil || c.rdb == nil {
+		return true, nil
+	}
 	if sessionUUID == "" || maxSessions <= 0 {
 		return true, nil // 无效参数，默认允许
 	}
@@ -206,6 +211,9 @@ func (c *sessionLimitCache) RegisterSession(ctx context.Context, accountID int64
 
 // RefreshSession 刷新会话时间戳
 func (c *sessionLimitCache) RefreshSession(ctx context.Context, accountID int64, sessionUUID string, idleTimeout time.Duration) error {
+	if c == nil || c.rdb == nil {
+		return nil
+	}
 	if sessionUUID == "" {
 		return nil
 	}
@@ -222,6 +230,9 @@ func (c *sessionLimitCache) RefreshSession(ctx context.Context, accountID int64,
 
 // GetActiveSessionCount 获取活跃会话数
 func (c *sessionLimitCache) GetActiveSessionCount(ctx context.Context, accountID int64) (int, error) {
+	if c == nil || c.rdb == nil {
+		return 0, nil
+	}
 	key := sessionLimitKey(accountID)
 	idleTimeoutSeconds := int(c.defaultIdleTimeout.Seconds())
 
@@ -234,6 +245,13 @@ func (c *sessionLimitCache) GetActiveSessionCount(ctx context.Context, accountID
 
 // GetActiveSessionCountBatch 批量获取多个账号的活跃会话数
 func (c *sessionLimitCache) GetActiveSessionCountBatch(ctx context.Context, accountIDs []int64, idleTimeouts map[int64]time.Duration) (map[int64]int, error) {
+	if c == nil || c.rdb == nil {
+		result := make(map[int64]int, len(accountIDs))
+		for _, id := range accountIDs {
+			result[id] = 0
+		}
+		return result, nil
+	}
 	if len(accountIDs) == 0 {
 		return make(map[int64]int), nil
 	}
@@ -271,6 +289,9 @@ func (c *sessionLimitCache) GetActiveSessionCountBatch(ctx context.Context, acco
 
 // IsSessionActive 检查会话是否活跃
 func (c *sessionLimitCache) IsSessionActive(ctx context.Context, accountID int64, sessionUUID string) (bool, error) {
+	if c == nil || c.rdb == nil {
+		return true, nil
+	}
 	if sessionUUID == "" {
 		return false, nil
 	}
@@ -289,6 +310,9 @@ func (c *sessionLimitCache) IsSessionActive(ctx context.Context, accountID int64
 
 // GetWindowCost 获取缓存的窗口费用
 func (c *sessionLimitCache) GetWindowCost(ctx context.Context, accountID int64) (float64, bool, error) {
+	if c == nil || c.rdb == nil {
+		return 0, false, nil
+	}
 	key := windowCostKey(accountID)
 	val, err := c.rdb.Get(ctx, key).Float64()
 	if err == redis.Nil {
@@ -302,12 +326,18 @@ func (c *sessionLimitCache) GetWindowCost(ctx context.Context, accountID int64) 
 
 // SetWindowCost 设置窗口费用缓存
 func (c *sessionLimitCache) SetWindowCost(ctx context.Context, accountID int64, cost float64) error {
+	if c == nil || c.rdb == nil {
+		return nil
+	}
 	key := windowCostKey(accountID)
 	return c.rdb.Set(ctx, key, cost, windowCostCacheTTL).Err()
 }
 
 // GetWindowCostBatch 批量获取窗口费用缓存
 func (c *sessionLimitCache) GetWindowCostBatch(ctx context.Context, accountIDs []int64) (map[int64]float64, error) {
+	if c == nil || c.rdb == nil {
+		return map[int64]float64{}, nil
+	}
 	if len(accountIDs) == 0 {
 		return make(map[int64]float64), nil
 	}

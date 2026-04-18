@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"log"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/server/routes"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	setupflow "github.com/Wei-Shaw/sub2api/internal/setup"
 	"github.com/Wei-Shaw/sub2api/internal/web"
 
 	"github.com/gin-gonic/gin"
@@ -60,6 +62,11 @@ func SetupRouter(
 		}
 		return nil
 	}))
+	r.Use(setupGateMiddleware())
+
+	// Setup routes are registered in the normal server as well. SQLite first-run
+	// uses this unified server so setup can complete without process restart.
+	setupflow.RegisterRoutes(r)
 
 	// Serve embedded frontend with settings injection if available
 	if web.HasEmbeddedFrontend() {
@@ -84,6 +91,38 @@ func SetupRouter(
 	registerRoutes(r, handlers, jwtAuth, adminAuth, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, cfg, redisClient)
 
 	return r
+}
+
+func setupGateMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !setupflow.NeedsSetup() {
+			c.Next()
+			return
+		}
+		path := c.Request.URL.Path
+		if path == "/" ||
+			path == "/health" ||
+			strings.HasPrefix(path, "/setup/") ||
+			strings.HasPrefix(path, "/assets/") ||
+			path == "/favicon.ico" {
+			c.Next()
+			return
+		}
+		if strings.HasPrefix(path, "/api/") ||
+			strings.HasPrefix(path, "/v1/") ||
+			strings.HasPrefix(path, "/v1beta/") ||
+			strings.HasPrefix(path, "/antigravity/") ||
+			path == "/responses" ||
+			strings.HasPrefix(path, "/responses/") {
+			c.JSON(503, gin.H{
+				"code":    503,
+				"message": "setup required",
+			})
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
 }
 
 // registerRoutes 注册所有 HTTP 路由

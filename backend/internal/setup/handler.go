@@ -7,10 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/sysutil"
 
 	"github.com/gin-gonic/gin"
 )
@@ -223,8 +221,8 @@ func testRedis(c *gin.Context) {
 
 // InstallRequest represents installation request
 type InstallRequest struct {
-	Database DatabaseConfig `json:"database" binding:"required"`
-	Redis    RedisConfig    `json:"redis" binding:"required"`
+	Database DatabaseConfig `json:"database"`
+	Redis    RedisConfig    `json:"redis"`
 	Admin    AdminConfig    `json:"admin" binding:"required"`
 	Server   ServerConfig   `json:"server"`
 }
@@ -248,42 +246,61 @@ func install(c *gin.Context) {
 	}
 
 	req.Admin.Email = strings.TrimSpace(req.Admin.Email)
+	req.Database.Engine = strings.TrimSpace(req.Database.Engine)
+	if req.Database.Engine == "" {
+		req.Database.Engine = "sqlite"
+	}
 	req.Database.Host = strings.TrimSpace(req.Database.Host)
 	req.Database.User = strings.TrimSpace(req.Database.User)
 	req.Database.DBName = strings.TrimSpace(req.Database.DBName)
 	req.Redis.Host = strings.TrimSpace(req.Redis.Host)
 
+	// SQLite MVP defaults: no external DB/Redis configuration required.
+	if strings.EqualFold(req.Database.Engine, "sqlite") {
+		if req.Database.DBName == "" {
+			req.Database.DBName = getEnvOrDefault("DATABASE_DBNAME", "./data/sub2api.db")
+		}
+		if req.Database.SSLMode == "" {
+			req.Database.SSLMode = "disable"
+		}
+		req.Redis.Enabled = false
+	}
+
 	// ========== COMPREHENSIVE INPUT VALIDATION ==========
 	// Database validation
-	if !validateHostname(req.Database.Host) {
-		response.Error(c, http.StatusBadRequest, "Invalid database hostname")
-		return
-	}
-	if !validatePort(req.Database.Port) {
-		response.Error(c, http.StatusBadRequest, "Invalid database port")
-		return
-	}
-	if !validateUsername(req.Database.User) {
-		response.Error(c, http.StatusBadRequest, "Invalid database username")
-		return
-	}
-	if !validateDBName(req.Database.DBName) {
-		response.Error(c, http.StatusBadRequest, "Invalid database name")
-		return
+	if !strings.EqualFold(req.Database.Engine, "sqlite") {
+		if !validateHostname(req.Database.Host) {
+			response.Error(c, http.StatusBadRequest, "Invalid database hostname")
+			return
+		}
+		if !validatePort(req.Database.Port) {
+			response.Error(c, http.StatusBadRequest, "Invalid database port")
+			return
+		}
+		if !validateUsername(req.Database.User) {
+			response.Error(c, http.StatusBadRequest, "Invalid database username")
+			return
+		}
+		if !validateDBName(req.Database.DBName) {
+			response.Error(c, http.StatusBadRequest, "Invalid database name")
+			return
+		}
 	}
 
 	// Redis validation
-	if !validateHostname(req.Redis.Host) {
-		response.Error(c, http.StatusBadRequest, "Invalid Redis hostname")
-		return
-	}
-	if !validatePort(req.Redis.Port) {
-		response.Error(c, http.StatusBadRequest, "Invalid Redis port")
-		return
-	}
-	if req.Redis.DB < 0 || req.Redis.DB > 15 {
-		response.Error(c, http.StatusBadRequest, "Invalid Redis database number")
-		return
+	if req.Redis.Enabled {
+		if !validateHostname(req.Redis.Host) {
+			response.Error(c, http.StatusBadRequest, "Invalid Redis hostname")
+			return
+		}
+		if !validatePort(req.Redis.Port) {
+			response.Error(c, http.StatusBadRequest, "Invalid Redis port")
+			return
+		}
+		if req.Redis.DB < 0 || req.Redis.DB > 15 {
+			response.Error(c, http.StatusBadRequest, "Invalid Redis database number")
+			return
+		}
 	}
 
 	// Admin validation
@@ -340,16 +357,9 @@ func install(c *gin.Context) {
 		return
 	}
 
-	// Schedule service restart in background after sending response
-	// This ensures the client receives the success response before the service restarts
-	go func() {
-		// Wait a moment to ensure the response is sent
-		time.Sleep(500 * time.Millisecond)
-		sysutil.RestartServiceAsync()
-	}()
-
 	response.Success(c, gin.H{
-		"message": "Installation completed successfully. Service will restart automatically.",
-		"restart": true,
+		"message":                 "Installation completed successfully.",
+		"restart":                 false,
+		"manual_restart_required": false,
 	})
 }

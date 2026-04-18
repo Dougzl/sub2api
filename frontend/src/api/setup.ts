@@ -18,6 +18,7 @@ export interface SetupStatus {
 }
 
 export interface DatabaseConfig {
+  engine: string
   host: string
   port: number
   user: string
@@ -27,6 +28,7 @@ export interface DatabaseConfig {
 }
 
 export interface RedisConfig {
+  enabled: boolean
   host: string
   port: number
   password: string

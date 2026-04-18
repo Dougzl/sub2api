@@ -694,6 +694,7 @@ func (s *ServerConfig) Address() string {
 // DatabaseConfig 数据库连接配置
 // 性能优化：新增连接池参数，避免频繁创建/销毁连接
 type DatabaseConfig struct {
+	Engine   string `mapstructure:"engine"`
 	Host     string `mapstructure:"host"`
 	Port     int    `mapstructure:"port"`
 	User     string `mapstructure:"user"`
@@ -712,6 +713,12 @@ type DatabaseConfig struct {
 }
 
 func (d *DatabaseConfig) DSN() string {
+	if strings.EqualFold(strings.TrimSpace(d.Engine), "sqlite") {
+		if strings.TrimSpace(d.DBName) == "" {
+			return "./data/sub2api.db"
+		}
+		return d.DBName
+	}
 	// 当密码为空时不包含 password 参数，避免 libpq 解析错误
 	if d.Password == "" {
 		return fmt.Sprintf(
@@ -727,6 +734,9 @@ func (d *DatabaseConfig) DSN() string {
 
 // DSNWithTimezone returns DSN with timezone setting
 func (d *DatabaseConfig) DSNWithTimezone(tz string) string {
+	if strings.EqualFold(strings.TrimSpace(d.Engine), "sqlite") {
+		return d.DSN()
+	}
 	if tz == "" {
 		tz = "Asia/Shanghai"
 	}
@@ -746,6 +756,7 @@ func (d *DatabaseConfig) DSNWithTimezone(tz string) string {
 // RedisConfig Redis 连接配置
 // 性能优化：新增连接池和超时参数，提升高并发场景下的吞吐量
 type RedisConfig struct {
+	Enabled  bool   `mapstructure:"enabled"`
 	Host     string `mapstructure:"host"`
 	Port     int    `mapstructure:"port"`
 	Password string `mapstructure:"password"`
@@ -989,6 +1000,10 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	}
 
 	cfg.RunMode = NormalizeRunMode(cfg.RunMode)
+	cfg.Database.Engine = strings.ToLower(strings.TrimSpace(cfg.Database.Engine))
+	if cfg.Database.Engine == "" {
+		cfg.Database.Engine = "sqlite"
+	}
 	cfg.Server.Mode = strings.ToLower(strings.TrimSpace(cfg.Server.Mode))
 	if cfg.Server.Mode == "" {
 		cfg.Server.Mode = "debug"
@@ -1227,18 +1242,20 @@ func setDefaults() {
 	viper.SetDefault("oidc_connect.userinfo_username_path", "")
 
 	// Database
+	viper.SetDefault("database.engine", "sqlite")
 	viper.SetDefault("database.host", "localhost")
-	viper.SetDefault("database.port", 5432)
-	viper.SetDefault("database.user", "postgres")
-	viper.SetDefault("database.password", "postgres")
-	viper.SetDefault("database.dbname", "sub2api")
-	viper.SetDefault("database.sslmode", "prefer")
-	viper.SetDefault("database.max_open_conns", 256)
-	viper.SetDefault("database.max_idle_conns", 128)
+	viper.SetDefault("database.port", 0)
+	viper.SetDefault("database.user", "")
+	viper.SetDefault("database.password", "")
+	viper.SetDefault("database.dbname", "./data/sub2api.db")
+	viper.SetDefault("database.sslmode", "disable")
+	viper.SetDefault("database.max_open_conns", 1)
+	viper.SetDefault("database.max_idle_conns", 1)
 	viper.SetDefault("database.conn_max_lifetime_minutes", 30)
 	viper.SetDefault("database.conn_max_idle_time_minutes", 5)
 
 	// Redis
+	viper.SetDefault("redis.enabled", false)
 	viper.SetDefault("redis.host", "localhost")
 	viper.SetDefault("redis.port", 6379)
 	viper.SetDefault("redis.password", "")
@@ -1251,7 +1268,7 @@ func setDefaults() {
 	viper.SetDefault("redis.enable_tls", false)
 
 	// Ops (vNext)
-	viper.SetDefault("ops.enabled", true)
+	viper.SetDefault("ops.enabled", false)
 	viper.SetDefault("ops.use_preaggregated_tables", true)
 	viper.SetDefault("ops.cleanup.enabled", true)
 	viper.SetDefault("ops.cleanup.schedule", "0 2 * * *")
@@ -1754,6 +1771,11 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("billing.circuit_breaker.half_open_requests must be positive")
 		}
 	}
+	switch strings.ToLower(strings.TrimSpace(c.Database.Engine)) {
+	case "sqlite", "postgres":
+	default:
+		return fmt.Errorf("database.engine must be sqlite or postgres")
+	}
 	if c.Database.MaxOpenConns <= 0 {
 		return fmt.Errorf("database.max_open_conns must be positive")
 	}
@@ -1769,23 +1791,25 @@ func (c *Config) Validate() error {
 	if c.Database.ConnMaxIdleTimeMinutes < 0 {
 		return fmt.Errorf("database.conn_max_idle_time_minutes must be non-negative")
 	}
-	if c.Redis.DialTimeoutSeconds <= 0 {
-		return fmt.Errorf("redis.dial_timeout_seconds must be positive")
-	}
-	if c.Redis.ReadTimeoutSeconds <= 0 {
-		return fmt.Errorf("redis.read_timeout_seconds must be positive")
-	}
-	if c.Redis.WriteTimeoutSeconds <= 0 {
-		return fmt.Errorf("redis.write_timeout_seconds must be positive")
-	}
-	if c.Redis.PoolSize <= 0 {
-		return fmt.Errorf("redis.pool_size must be positive")
-	}
-	if c.Redis.MinIdleConns < 0 {
-		return fmt.Errorf("redis.min_idle_conns must be non-negative")
-	}
-	if c.Redis.MinIdleConns > c.Redis.PoolSize {
-		return fmt.Errorf("redis.min_idle_conns cannot exceed redis.pool_size")
+	if c.Redis.Enabled {
+		if c.Redis.DialTimeoutSeconds <= 0 {
+			return fmt.Errorf("redis.dial_timeout_seconds must be positive")
+		}
+		if c.Redis.ReadTimeoutSeconds <= 0 {
+			return fmt.Errorf("redis.read_timeout_seconds must be positive")
+		}
+		if c.Redis.WriteTimeoutSeconds <= 0 {
+			return fmt.Errorf("redis.write_timeout_seconds must be positive")
+		}
+		if c.Redis.PoolSize <= 0 {
+			return fmt.Errorf("redis.pool_size must be positive")
+		}
+		if c.Redis.MinIdleConns < 0 {
+			return fmt.Errorf("redis.min_idle_conns must be non-negative")
+		}
+		if c.Redis.MinIdleConns > c.Redis.PoolSize {
+			return fmt.Errorf("redis.min_idle_conns cannot exceed redis.pool_size")
+		}
 	}
 	if c.Dashboard.Enabled {
 		if c.Dashboard.StatsFreshTTLSeconds <= 0 {

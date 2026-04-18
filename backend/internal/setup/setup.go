@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
+	dbuser "github.com/Wei-Shaw/sub2api/ent/user"
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
 	"gopkg.in/yaml.v3"
@@ -45,15 +47,19 @@ func GetDataDir() string {
 		return dir
 	}
 
-	// Check if /app/data exists and is writable (Docker environment)
+	// Check if /app/data exists and is writable (Docker environment).
+	// On Windows, paths like /app/data resolve under the current drive (often
+	// C:\app\data). Do not treat that as the default local app data directory.
 	dockerDataDir := "/app/data"
-	if info, err := os.Stat(dockerDataDir); err == nil && info.IsDir() {
-		// Try to check if writable by creating a temp file
-		testFile := dockerDataDir + "/.write_test"
-		if f, err := os.Create(testFile); err == nil {
-			_ = f.Close()
-			_ = os.Remove(testFile)
-			return dockerDataDir
+	if runtime.GOOS != "windows" {
+		if info, err := os.Stat(dockerDataDir); err == nil && info.IsDir() {
+			// Try to check if writable by creating a temp file
+			testFile := dockerDataDir + "/.write_test"
+			if f, err := os.Create(testFile); err == nil {
+				_ = f.Close()
+				_ = os.Remove(testFile)
+				return dockerDataDir
+			}
 		}
 	}
 
@@ -82,6 +88,7 @@ type SetupConfig struct {
 }
 
 type DatabaseConfig struct {
+	Engine   string `json:"engine" yaml:"engine"`
 	Host     string `json:"host" yaml:"host"`
 	Port     int    `json:"port" yaml:"port"`
 	User     string `json:"user" yaml:"user"`
@@ -91,6 +98,7 @@ type DatabaseConfig struct {
 }
 
 type RedisConfig struct {
+	Enabled   bool   `json:"enabled" yaml:"enabled"`
 	Host      string `json:"host" yaml:"host"`
 	Port      int    `json:"port" yaml:"port"`
 	Password  string `json:"password" yaml:"password"`
@@ -157,11 +165,90 @@ func NeedsSetup() bool {
 		return false // Lock file exists, already installed
 	}
 
+	// Check 3: SQLite setup marker stored in the embedded database.
+	// This keeps the unified setup gate tied to durable app state and prevents
+	// a deleted config/lock file from re-opening business routes as "unsetup".
+	if sqliteSetupStateComplete() {
+		return false
+	}
+
 	return true
+}
+
+func sqliteSetupStateComplete() bool {
+	engine := strings.TrimSpace(os.Getenv("DATABASE_ENGINE"))
+	if engine != "" && !strings.EqualFold(engine, "sqlite") {
+		return false
+	}
+	dbPath := getEnvOrDefault("DATABASE_DBNAME", "./data/sub2api.db")
+	if _, err := os.Stat(dbPath); err != nil {
+		return false
+	}
+	db, err := sql.Open("sqlite", sqliteSetupDSN(dbPath))
+	if err != nil {
+		return false
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var value string
+	err = db.QueryRowContext(ctx, "SELECT value FROM setup_state WHERE key = 'installed'").Scan(&value)
+	return err == nil && strings.EqualFold(strings.TrimSpace(value), "true")
+}
+
+func markSQLiteSetupComplete(cfg *SetupConfig) {
+	if cfg == nil {
+		return
+	}
+	engine := strings.TrimSpace(cfg.Database.Engine)
+	if engine != "" && !strings.EqualFold(engine, "sqlite") {
+		return
+	}
+	dbPath := strings.TrimSpace(cfg.Database.DBName)
+	if dbPath == "" {
+		dbPath = "./data/sub2api.db"
+	}
+	db, err := sql.Open("sqlite", sqliteSetupDSN(dbPath))
+	if err != nil {
+		logger.LegacyPrintf("setup", "failed to open sqlite setup state db: %v", err)
+		return
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := db.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS setup_state (
+	key TEXT PRIMARY KEY,
+	value TEXT NOT NULL,
+	updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+)`); err != nil {
+		logger.LegacyPrintf("setup", "failed to ensure sqlite setup_state table: %v", err)
+		return
+	}
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO setup_state(key, value, updated_at)
+VALUES ('installed', 'true', CURRENT_TIMESTAMP)
+ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`); err != nil {
+		logger.LegacyPrintf("setup", "failed to mark sqlite setup complete: %v", err)
+	}
+}
+
+func sqliteSetupDSN(path string) string {
+	return fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)", path)
 }
 
 // TestDatabaseConnection tests the database connection and creates database if not exists
 func TestDatabaseConnection(cfg *DatabaseConfig) error {
+	if strings.EqualFold(strings.TrimSpace(cfg.Engine), "sqlite") || strings.TrimSpace(cfg.Engine) == "" {
+		appCfg := setupConfigToRuntimeConfig(cfgToSetupConfig(cfg))
+		client, _, err := repository.InitEnt(appCfg)
+		if err != nil {
+			return err
+		}
+		return client.Close()
+	}
 	// First, connect to the default 'postgres' database to check/create target database
 	defaultDSN := fmt.Sprintf(
 		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
@@ -242,6 +329,9 @@ func TestDatabaseConnection(cfg *DatabaseConfig) error {
 
 // TestRedisConnection tests the Redis connection
 func TestRedisConnection(cfg *RedisConfig) error {
+	if cfg == nil || !cfg.Enabled {
+		return nil
+	}
 	opts := &redis.Options{
 		Addr:     fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
 		Password: cfg.Password,
@@ -290,6 +380,43 @@ func Install(cfg *SetupConfig) error {
 	}
 
 	// Test connections
+	if !strings.EqualFold(strings.TrimSpace(cfg.Database.Engine), "sqlite") && strings.TrimSpace(cfg.Database.Engine) != "" {
+		if err := TestDatabaseConnection(&cfg.Database); err != nil {
+			return fmt.Errorf("database connection failed: %w", err)
+		}
+	}
+
+	if cfg.Redis.Enabled {
+		if err := TestRedisConnection(&cfg.Redis); err != nil {
+			return fmt.Errorf("redis connection failed: %w", err)
+		}
+	}
+
+	// Initialize database
+	if err := initializeDatabase(cfg); err != nil {
+		return fmt.Errorf("database initialization failed: %w", err)
+	}
+
+	// Create admin user (only when database is empty and no admin exists).
+	if _, _, err := createAdminUser(cfg); err != nil {
+		return fmt.Errorf("admin user creation failed: %w", err)
+	}
+
+	// Write config file
+	if err := writeConfigFile(cfg); err != nil {
+		return fmt.Errorf("config file creation failed: %w", err)
+	}
+
+	// Create installation lock file to prevent re-setup attacks
+	if err := createInstallLock(); err != nil {
+		return fmt.Errorf("failed to create install lock: %w", err)
+	}
+	markSQLiteSetupComplete(cfg)
+
+	return nil
+}
+
+func installPostgresLegacy(cfg *SetupConfig) error {
 	if err := TestDatabaseConnection(&cfg.Database); err != nil {
 		return fmt.Errorf("database connection failed: %w", err)
 	}
@@ -317,6 +444,7 @@ func Install(cfg *SetupConfig) error {
 	if err := createInstallLock(); err != nil {
 		return fmt.Errorf("failed to create install lock: %w", err)
 	}
+	markSQLiteSetupComplete(cfg)
 
 	return nil
 }
@@ -328,6 +456,14 @@ func createInstallLock() error {
 }
 
 func initializeDatabase(cfg *SetupConfig) error {
+	if strings.EqualFold(strings.TrimSpace(cfg.Database.Engine), "sqlite") || strings.TrimSpace(cfg.Database.Engine) == "" {
+		appCfg := setupConfigToRuntimeConfig(cfg)
+		client, _, err := repository.InitEnt(appCfg)
+		if err != nil {
+			return err
+		}
+		return client.Close()
+	}
 	dsn := fmt.Sprintf(
 		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 		cfg.Database.Host, cfg.Database.Port, cfg.Database.User,
@@ -351,6 +487,9 @@ func initializeDatabase(cfg *SetupConfig) error {
 }
 
 func createAdminUser(cfg *SetupConfig) (bool, string, error) {
+	if strings.EqualFold(strings.TrimSpace(cfg.Database.Engine), "sqlite") || strings.TrimSpace(cfg.Database.Engine) == "" {
+		return createAdminUserSQLite(cfg)
+	}
 	dsn := fmt.Sprintf(
 		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 		cfg.Database.Host, cfg.Database.Port, cfg.Database.User,
@@ -426,6 +565,93 @@ func createAdminUser(cfg *SetupConfig) (bool, string, error) {
 		return false, "", err
 	}
 	return true, decision.reason, nil
+}
+
+func cfgToSetupConfig(db *DatabaseConfig) *SetupConfig {
+	if db == nil {
+		return &SetupConfig{}
+	}
+	return &SetupConfig{Database: *db, JWT: JWTConfig{Secret: strings.Repeat("x", 32), ExpireHour: 24}}
+}
+
+func setupConfigToRuntimeConfig(cfg *SetupConfig) *config.Config {
+	appCfg, err := config.LoadForBootstrap()
+	if err != nil {
+		appCfg = &config.Config{}
+	}
+	engine := strings.ToLower(strings.TrimSpace(cfg.Database.Engine))
+	if engine == "" {
+		engine = "sqlite"
+	}
+	appCfg.Database.Engine = engine
+	appCfg.Database.DBName = firstNonEmptySetup(cfg.Database.DBName, "./data/sub2api.db")
+	appCfg.Database.Host = firstNonEmptySetup(cfg.Database.Host, "localhost")
+	appCfg.Database.Port = cfg.Database.Port
+	appCfg.Database.User = cfg.Database.User
+	appCfg.Database.Password = cfg.Database.Password
+	appCfg.Database.SSLMode = firstNonEmptySetup(cfg.Database.SSLMode, "disable")
+	appCfg.Redis.Enabled = cfg.Redis.Enabled
+	appCfg.JWT.Secret = cfg.JWT.Secret
+	if cfg.JWT.ExpireHour > 0 {
+		appCfg.JWT.ExpireHour = cfg.JWT.ExpireHour
+	}
+	appCfg.Server.Mode = firstNonEmptySetup(cfg.Server.Mode, "release")
+	if cfg.Timezone != "" {
+		appCfg.Timezone = cfg.Timezone
+	}
+	return appCfg
+}
+
+func firstNonEmptySetup(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func createAdminUserSQLite(cfg *SetupConfig) (bool, string, error) {
+	appCfg := setupConfigToRuntimeConfig(cfg)
+	client, _, err := repository.InitEnt(appCfg)
+	if err != nil {
+		return false, "", err
+	}
+	defer client.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	totalUsers, err := client.User.Query().Count(ctx)
+	if err != nil {
+		return false, "", err
+	}
+	adminUsers, err := client.User.Query().Where(dbuser.RoleEQ(service.RoleAdmin)).Count(ctx)
+	if err != nil {
+		return false, "", err
+	}
+	decision := decideAdminBootstrap(int64(totalUsers), int64(adminUsers))
+	if !decision.shouldCreate {
+		return false, decision.reason, nil
+	}
+	if strings.TrimSpace(cfg.Admin.Password) == "" {
+		password, genErr := generateSecret(16)
+		if genErr != nil {
+			return false, "", fmt.Errorf("failed to generate admin password: %w", genErr)
+		}
+		cfg.Admin.Password = password
+		fmt.Printf("Generated admin password (one-time): %s\n", cfg.Admin.Password)
+	}
+	admin := &service.User{Email: cfg.Admin.Email, Role: service.RoleAdmin, Status: service.StatusActive, Concurrency: setupDefaultAdminConcurrency()}
+	if err := admin.SetPassword(cfg.Admin.Password); err != nil {
+		return false, "", err
+	}
+	_, err = client.User.Create().
+		SetEmail(admin.Email).
+		SetPasswordHash(admin.PasswordHash).
+		SetRole(admin.Role).
+		SetStatus(admin.Status).
+		SetConcurrency(admin.Concurrency).
+		Save(ctx)
+	return err == nil, decision.reason, err
 }
 
 func writeConfigFile(cfg *SetupConfig) error {
@@ -513,6 +739,14 @@ func AutoSetupEnabled() bool {
 	return val == "true" || val == "1" || val == "yes"
 }
 
+// ShouldUseUnifiedSQLiteSetup reports whether first-run setup can happen inside
+// the normal server. SQLite is embedded and can initialize before admin setup,
+// so it does not need a separate setup-only HTTP server.
+func ShouldUseUnifiedSQLiteSetup() bool {
+	engine := strings.TrimSpace(os.Getenv("DATABASE_ENGINE"))
+	return engine == "" || strings.EqualFold(engine, "sqlite")
+}
+
 // getEnvOrDefault gets environment variable or returns default value
 func getEnvOrDefault(key, defaultValue string) string {
 	if val := os.Getenv(key); val != "" {
@@ -546,14 +780,16 @@ func AutoSetupFromEnv() error {
 	// Build config from environment variables
 	cfg := &SetupConfig{
 		Database: DatabaseConfig{
+			Engine:   getEnvOrDefault("DATABASE_ENGINE", "sqlite"),
 			Host:     getEnvOrDefault("DATABASE_HOST", "localhost"),
-			Port:     getEnvIntOrDefault("DATABASE_PORT", 5432),
-			User:     getEnvOrDefault("DATABASE_USER", "postgres"),
+			Port:     getEnvIntOrDefault("DATABASE_PORT", 0),
+			User:     getEnvOrDefault("DATABASE_USER", ""),
 			Password: getEnvOrDefault("DATABASE_PASSWORD", ""),
-			DBName:   getEnvOrDefault("DATABASE_DBNAME", "sub2api"),
+			DBName:   getEnvOrDefault("DATABASE_DBNAME", "./data/sub2api.db"),
 			SSLMode:  getEnvOrDefault("DATABASE_SSLMODE", "disable"),
 		},
 		Redis: RedisConfig{
+			Enabled:   getEnvOrDefault("REDIS_ENABLED", "false") == "true",
 			Host:      getEnvOrDefault("REDIS_HOST", "localhost"),
 			Port:      getEnvIntOrDefault("REDIS_PORT", 6379),
 			Password:  getEnvOrDefault("REDIS_PASSWORD", ""),
@@ -586,19 +822,25 @@ func AutoSetupFromEnv() error {
 		logger.LegacyPrintf("setup", "%s", "Warning: JWT secret auto-generated. Consider setting a fixed secret for production.")
 	}
 
-	// Test database connection
-	logger.LegacyPrintf("setup", "%s", "Testing database connection...")
-	if err := TestDatabaseConnection(&cfg.Database); err != nil {
-		return fmt.Errorf("database connection failed: %w", err)
+	if !strings.EqualFold(strings.TrimSpace(cfg.Database.Engine), "sqlite") {
+		logger.LegacyPrintf("setup", "%s", "Testing database connection...")
+		if err := TestDatabaseConnection(&cfg.Database); err != nil {
+			return fmt.Errorf("database connection failed: %w", err)
+		}
+		logger.LegacyPrintf("setup", "%s", "Database connection successful")
+	} else {
+		logger.LegacyPrintf("setup", "%s", "Skipping database preflight for SQLite")
 	}
-	logger.LegacyPrintf("setup", "%s", "Database connection successful")
 
-	// Test Redis connection
-	logger.LegacyPrintf("setup", "%s", "Testing Redis connection...")
-	if err := TestRedisConnection(&cfg.Redis); err != nil {
-		return fmt.Errorf("redis connection failed: %w", err)
+	if cfg.Redis.Enabled {
+		logger.LegacyPrintf("setup", "%s", "Testing Redis connection...")
+		if err := TestRedisConnection(&cfg.Redis); err != nil {
+			return fmt.Errorf("redis connection failed: %w", err)
+		}
+		logger.LegacyPrintf("setup", "%s", "Redis connection successful")
+	} else {
+		logger.LegacyPrintf("setup", "%s", "Redis disabled; skipping Redis connection test")
 	}
-	logger.LegacyPrintf("setup", "%s", "Redis connection successful")
 
 	// Initialize database
 	logger.LegacyPrintf("setup", "%s", "Initializing database...")
@@ -638,6 +880,7 @@ func AutoSetupFromEnv() error {
 		return fmt.Errorf("failed to create install lock: %w", err)
 	}
 	logger.LegacyPrintf("setup", "%s", "Installation lock created")
+	markSQLiteSetupComplete(cfg)
 
 	logger.LegacyPrintf("setup", "%s", "Auto setup completed successfully!")
 	return nil

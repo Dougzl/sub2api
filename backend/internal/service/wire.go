@@ -133,7 +133,9 @@ func ProvideDashboardAggregationService(repo DashboardAggregationRepository, tim
 // ProvideUsageCleanupService 创建并启动使用记录清理任务服务
 func ProvideUsageCleanupService(repo UsageCleanupRepository, timingWheel *TimingWheelService, dashboardAgg *DashboardAggregationService, cfg *config.Config) *UsageCleanupService {
 	svc := NewUsageCleanupService(repo, timingWheel, dashboardAgg, cfg)
-	svc.Start()
+	if cfg != nil && cfg.UsageCleanup.Enabled && cfg.Database.Engine == "postgres" {
+		svc.Start()
+	}
 	return svc
 }
 
@@ -231,7 +233,9 @@ func ProvideOpsMetricsCollector(
 	cfg *config.Config,
 ) *OpsMetricsCollector {
 	collector := NewOpsMetricsCollector(opsRepo, settingRepo, accountRepo, concurrencyService, db, redisClient, cfg)
-	collector.Start()
+	if cfg != nil && cfg.Ops.Enabled {
+		collector.Start()
+	}
 	return collector
 }
 
@@ -244,7 +248,9 @@ func ProvideOpsAggregationService(
 	cfg *config.Config,
 ) *OpsAggregationService {
 	svc := NewOpsAggregationService(opsRepo, settingRepo, db, redisClient, cfg)
-	svc.Start()
+	if cfg != nil && cfg.Ops.Enabled {
+		svc.Start()
+	}
 	return svc
 }
 
@@ -257,7 +263,9 @@ func ProvideOpsAlertEvaluatorService(
 	cfg *config.Config,
 ) *OpsAlertEvaluatorService {
 	svc := NewOpsAlertEvaluatorService(opsService, opsRepo, emailService, redisClient, cfg)
-	svc.Start()
+	if cfg != nil && cfg.Ops.Enabled {
+		svc.Start()
+	}
 	return svc
 }
 
@@ -269,14 +277,14 @@ func ProvideOpsCleanupService(
 	cfg *config.Config,
 ) *OpsCleanupService {
 	svc := NewOpsCleanupService(opsRepo, db, redisClient, cfg)
-	svc.Start()
+	if cfg != nil && cfg.Ops.Enabled {
+		svc.Start()
+	}
 	return svc
 }
 
 func ProvideOpsSystemLogSink(opsRepo OpsRepository) *OpsSystemLogSink {
 	sink := NewOpsSystemLogSink(opsRepo)
-	sink.Start()
-	logger.SetSink(sink)
 	return sink
 }
 
@@ -349,7 +357,9 @@ func ProvideOpsScheduledReportService(
 	cfg *config.Config,
 ) *OpsScheduledReportService {
 	svc := NewOpsScheduledReportService(opsService, userService, emailService, redisClient, cfg)
-	svc.Start()
+	if cfg != nil && cfg.Ops.Enabled {
+		svc.Start()
+	}
 	return svc
 }
 

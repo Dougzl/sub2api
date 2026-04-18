@@ -316,8 +316,8 @@ func TestLoadDefaultDatabaseSSLMode(t *testing.T) {
 		t.Fatalf("Load() error: %v", err)
 	}
 
-	if cfg.Database.SSLMode != "prefer" {
-		t.Fatalf("Database.SSLMode = %q, want %q", cfg.Database.SSLMode, "prefer")
+	if cfg.Database.SSLMode != "disable" {
+		t.Fatalf("Database.SSLMode = %q, want %q", cfg.Database.SSLMode, "disable")
 	}
 }
 
@@ -1041,27 +1041,27 @@ func TestValidateConfigErrors(t *testing.T) {
 		},
 		{
 			name:    "redis dial timeout",
-			mutate:  func(c *Config) { c.Redis.DialTimeoutSeconds = 0 },
+			mutate:  func(c *Config) { c.Redis.Enabled = true; c.Redis.DialTimeoutSeconds = 0 },
 			wantErr: "redis.dial_timeout_seconds",
 		},
 		{
 			name:    "redis read timeout",
-			mutate:  func(c *Config) { c.Redis.ReadTimeoutSeconds = 0 },
+			mutate:  func(c *Config) { c.Redis.Enabled = true; c.Redis.ReadTimeoutSeconds = 0 },
 			wantErr: "redis.read_timeout_seconds",
 		},
 		{
 			name:    "redis write timeout",
-			mutate:  func(c *Config) { c.Redis.WriteTimeoutSeconds = 0 },
+			mutate:  func(c *Config) { c.Redis.Enabled = true; c.Redis.WriteTimeoutSeconds = 0 },
 			wantErr: "redis.write_timeout_seconds",
 		},
 		{
 			name:    "redis pool size",
-			mutate:  func(c *Config) { c.Redis.PoolSize = 0 },
+			mutate:  func(c *Config) { c.Redis.Enabled = true; c.Redis.PoolSize = 0 },
 			wantErr: "redis.pool_size",
 		},
 		{
 			name:    "redis idle exceeds pool",
-			mutate:  func(c *Config) { c.Redis.MinIdleConns = c.Redis.PoolSize + 1 },
+			mutate:  func(c *Config) { c.Redis.Enabled = true; c.Redis.MinIdleConns = c.Redis.PoolSize + 1 },
 			wantErr: "redis.min_idle_conns cannot exceed",
 		},
 		{

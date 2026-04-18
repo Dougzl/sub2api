@@ -21,6 +21,9 @@ import (
 // 2. MinIdleConns: 保持最小空闲连接，减少冷启动延迟（默认 10）
 // 3. DialTimeout/ReadTimeout/WriteTimeout: 精确控制各阶段超时
 func InitRedis(cfg *config.Config) *redis.Client {
+	if cfg == nil || !cfg.Redis.Enabled {
+		return nil
+	}
 	return redis.NewClient(buildRedisOptions(cfg))
 }
 

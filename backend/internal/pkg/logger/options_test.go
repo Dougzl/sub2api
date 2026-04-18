@@ -3,6 +3,7 @@ package logger
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"go.uber.org/zap"
@@ -11,9 +12,31 @@ import (
 
 func TestResolveLogFilePath_Default(t *testing.T) {
 	t.Setenv("DATA_DIR", "")
+	t.Setenv("LOCALAPPDATA", filepath.Join("C:", "Users", "tester", "AppData", "Local"))
+	t.Setenv("USERPROFILE", filepath.Join("C:", "Users", "tester"))
+	t.Setenv("XDG_STATE_HOME", "/tmp/tester-state")
+	t.Setenv("HOME", "/tmp/tester-home")
 	got := resolveLogFilePath("")
-	if got != DefaultContainerLogPath {
-		t.Fatalf("resolveLogFilePath() = %q, want %q", got, DefaultContainerLogPath)
+	want := filepath.Join("/tmp/tester-state", "sub2api", "logs", "sub2api.log")
+	if runtime.GOOS == "windows" {
+		want = filepath.Join("C:", "Users", "tester", "AppData", "Local", "sub2api", "logs", "sub2api.log")
+	}
+	if got != want {
+		t.Fatalf("resolveLogFilePath() = %q, want %q", got, want)
+	}
+}
+
+func TestResolveLogFilePath_WindowsLocalAppData(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific default")
+	}
+	t.Setenv("DATA_DIR", "")
+	t.Setenv("LOCALAPPDATA", filepath.Join("C:", "Users", "tester", "AppData", "Local"))
+	t.Setenv("USERPROFILE", filepath.Join("C:", "Users", "tester"))
+	got := resolveLogFilePath("")
+	want := filepath.Join("C:", "Users", "tester", "AppData", "Local", "sub2api", "logs", "sub2api.log")
+	if got != want {
+		t.Fatalf("resolveLogFilePath() = %q, want %q", got, want)
 	}
 }
 
@@ -65,7 +88,7 @@ func TestNormalizedOptions_InvalidFallback(t *testing.T) {
 	if !out.Output.ToStdout {
 		t.Fatalf("normalized output should fallback to stdout")
 	}
-	if out.Output.FilePath != DefaultContainerLogPath {
+	if out.Output.FilePath == "" || out.Output.FilePath == DefaultContainerLogPath {
 		t.Fatalf("normalized file path = %q", out.Output.FilePath)
 	}
 	if out.Rotation.MaxSizeMB != 100 {

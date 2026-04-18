@@ -6,6 +6,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/ent"
@@ -16,6 +19,7 @@ import (
 	"entgo.io/ent/dialect"
 	entsql "entgo.io/ent/dialect/sql"
 	_ "github.com/lib/pq" // PostgreSQL 驱动，通过副作用导入注册驱动
+	_ "modernc.org/sqlite"
 )
 
 // InitEnt 初始化 Ent ORM 客户端并返回客户端实例和底层的 *sql.DB。
@@ -36,36 +40,59 @@ import (
 //   - *sql.DB: 底层的 SQL 数据库连接，可用于直接执行原生 SQL
 //   - error: 初始化过程中的错误
 func InitEnt(cfg *config.Config) (*ent.Client, *sql.DB, error) {
+	setRuntimeStorageEngine(cfg.Database.Engine)
 	// 优先初始化时区设置，确保所有时间操作使用统一的时区。
 	// 这对于跨时区部署和日志时间戳的一致性至关重要。
 	if err := timezone.Init(cfg.Timezone); err != nil {
 		return nil, nil, err
 	}
 
-	// 构建包含时区信息的数据库连接字符串 (DSN)。
-	// 时区信息会传递给 PostgreSQL，确保数据库层面的时间处理正确。
+	dialectName := dialect.Postgres
 	dsn := cfg.Database.DSNWithTimezone(cfg.Timezone)
-
-	// 使用 Ent 的 SQL 驱动打开 PostgreSQL 连接。
-	// dialect.Postgres 指定使用 PostgreSQL 方言进行 SQL 生成。
-	drv, err := entsql.Open(dialect.Postgres, dsn)
+	if stringsEqualFold(cfg.Database.Engine, "sqlite") {
+		dialectName = dialect.SQLite
+		dsn = sqliteDSN(cfg.Database.DBName)
+	}
+	var drv *entsql.Driver
+	var err error
+	if stringsEqualFold(cfg.Database.Engine, "sqlite") {
+		sqlDB, openErr := sql.Open("sqlite", dsn)
+		if openErr != nil {
+			return nil, nil, openErr
+		}
+		drv = entsql.OpenDB(dialectName, sqlDB)
+	} else {
+		drv, err = entsql.Open(dialectName, dsn)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
 	applyDBPoolSettings(drv.DB(), cfg)
 
-	// 确保数据库 schema 已准备就绪。
-	// SQL 迁移文件是 schema 的权威来源（source of truth）。
-	// 这种方式比 Ent 的自动迁移更可控，支持复杂的迁移场景。
 	migrationCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	if err := applyMigrationsFS(migrationCtx, drv.DB(), migrations.FS); err != nil {
-		_ = drv.Close() // 迁移失败时关闭驱动，避免资源泄露
-		return nil, nil, err
-	}
 
 	// 创建 Ent 客户端，绑定到已配置的数据库驱动。
 	client := ent.NewClient(ent.Driver(drv))
+	if stringsEqualFold(cfg.Database.Engine, "sqlite") {
+		if err := ensureSQLitePragmas(migrationCtx, drv.DB()); err != nil {
+			_ = client.Close()
+			return nil, nil, err
+		}
+		if err := client.Schema.Create(migrationCtx); err != nil {
+			_ = client.Close()
+			return nil, nil, fmt.Errorf("create sqlite schema: %w", err)
+		}
+		if err := ensureSQLiteRuntimeTables(migrationCtx, drv.DB()); err != nil {
+			_ = client.Close()
+			return nil, nil, err
+		}
+	} else {
+		if err := applyMigrationsFS(migrationCtx, drv.DB(), migrations.FS); err != nil {
+			_ = client.Close()
+			return nil, nil, err
+		}
+	}
 
 	// 启动阶段：从配置或数据库中确保系统密钥可用。
 	if err := ensureBootstrapSecrets(migrationCtx, client, cfg); err != nil {
@@ -96,4 +123,19 @@ func InitEnt(cfg *config.Config) (*ent.Client, *sql.DB, error) {
 	}
 
 	return client, drv.DB(), nil
+}
+
+func sqliteDSN(path string) string {
+	if path == "" {
+		path = "./data/sub2api.db"
+	}
+	dir := filepath.Dir(path)
+	if dir != "." && dir != "" {
+		_ = os.MkdirAll(dir, 0o755)
+	}
+	return fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)", path)
+}
+
+func stringsEqualFold(a, b string) bool {
+	return strings.EqualFold(strings.TrimSpace(a), b)
 }

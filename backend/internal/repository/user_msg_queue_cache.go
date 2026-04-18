@@ -81,6 +81,9 @@ func umqScanPattern() string {
 
 // AcquireLock 尝试获取账号级串行锁
 func (c *userMsgQueueCache) AcquireLock(ctx context.Context, accountID int64, requestID string, lockTtlMs int) (bool, error) {
+	if c == nil || c.rdb == nil {
+		return true, nil
+	}
 	key := umqLockKey(accountID)
 	result, err := acquireLockScript.Run(ctx, c.rdb, []string{key}, requestID, lockTtlMs).Int()
 	if err != nil {
@@ -91,6 +94,9 @@ func (c *userMsgQueueCache) AcquireLock(ctx context.Context, accountID int64, re
 
 // ReleaseLock 释放锁并记录完成时间
 func (c *userMsgQueueCache) ReleaseLock(ctx context.Context, accountID int64, requestID string) (bool, error) {
+	if c == nil || c.rdb == nil {
+		return true, nil
+	}
 	lockKey := umqLockKey(accountID)
 	lastKey := umqLastKey(accountID)
 	result, err := releaseLockScript.Run(ctx, c.rdb, []string{lockKey, lastKey}, requestID).Int()
@@ -102,6 +108,9 @@ func (c *userMsgQueueCache) ReleaseLock(ctx context.Context, accountID int64, re
 
 // GetLastCompletedMs 获取上次完成时间（毫秒时间戳）
 func (c *userMsgQueueCache) GetLastCompletedMs(ctx context.Context, accountID int64) (int64, error) {
+	if c == nil || c.rdb == nil {
+		return 0, nil
+	}
 	key := umqLastKey(accountID)
 	val, err := c.rdb.Get(ctx, key).Result()
 	if errors.Is(err, redis.Nil) {
@@ -119,6 +128,9 @@ func (c *userMsgQueueCache) GetLastCompletedMs(ctx context.Context, accountID in
 
 // ForceReleaseLock 原子清理孤儿锁（仅在 PTTL == -1 时删除，防止 TOCTOU 竞态误删合法锁）
 func (c *userMsgQueueCache) ForceReleaseLock(ctx context.Context, accountID int64) error {
+	if c == nil || c.rdb == nil {
+		return nil
+	}
 	key := umqLockKey(accountID)
 	_, err := forceReleaseLockScript.Run(ctx, c.rdb, []string{key}).Result()
 	if err != nil && !errors.Is(err, redis.Nil) {
@@ -130,6 +142,9 @@ func (c *userMsgQueueCache) ForceReleaseLock(ctx context.Context, accountID int6
 // ScanLockKeys 扫描所有锁 key，仅返回 PTTL == -1（无过期时间）的孤儿锁 accountID 列表
 // 正常的锁都有 PX 过期时间，PTTL == -1 表示异常状态（如 Redis 故障恢复后丢失 TTL）
 func (c *userMsgQueueCache) ScanLockKeys(ctx context.Context, maxCount int) ([]int64, error) {
+	if c == nil || c.rdb == nil {
+		return nil, nil
+	}
 	var accountIDs []int64
 	var cursor uint64
 	pattern := umqScanPattern()
@@ -178,6 +193,9 @@ func (c *userMsgQueueCache) ScanLockKeys(ctx context.Context, maxCount int) ([]i
 
 // GetCurrentTimeMs 通过 Redis TIME 命令获取当前服务器时间（毫秒），确保与锁记录的时间源一致
 func (c *userMsgQueueCache) GetCurrentTimeMs(ctx context.Context) (int64, error) {
+	if c == nil || c.rdb == nil {
+		return time.Now().UnixMilli(), nil
+	}
 	t, err := c.rdb.Time(ctx).Result()
 	if err != nil {
 		return 0, fmt.Errorf("umq get redis time: %w", err)

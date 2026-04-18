@@ -12,6 +12,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/safe"
 )
 
 // UserMsgQueueCache 用户消息串行队列 Redis 缓存接口
@@ -273,7 +274,7 @@ func (s *UserMessageQueueService) StartCleanupWorker(interval time.Duration) {
 		}
 	}
 
-	go func() {
+	safe.Go("service.user_message_queue.cleanup_worker", func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -281,10 +282,10 @@ func (s *UserMessageQueueService) StartCleanupWorker(interval time.Duration) {
 			case <-s.stopCh:
 				return
 			case <-ticker.C:
-				runCleanup()
+				safe.Do("service.user_message_queue.cleanup_tick", runCleanup)
 			}
 		}
-	}()
+	})
 }
 
 // Stop 停止后台 cleanup worker

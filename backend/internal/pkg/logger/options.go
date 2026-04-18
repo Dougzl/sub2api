@@ -3,6 +3,7 @@ package logger
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -11,6 +12,7 @@ const (
 	// DefaultContainerLogPath 为容器内默认日志文件路径。
 	DefaultContainerLogPath = "/app/data/logs/sub2api.log"
 	defaultLogFilename      = "sub2api.log"
+	defaultAppDirName       = "sub2api"
 )
 
 type InitOptions struct {
@@ -99,6 +101,24 @@ func resolveLogFilePath(explicit string) string {
 	dataDir := strings.TrimSpace(os.Getenv("DATA_DIR"))
 	if dataDir != "" {
 		return filepath.Join(dataDir, "logs", defaultLogFilename)
+	}
+	return defaultUserLogPath()
+}
+
+func defaultUserLogPath() string {
+	if runtime.GOOS == "windows" {
+		if localAppData := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); localAppData != "" {
+			return filepath.Join(localAppData, defaultAppDirName, "logs", defaultLogFilename)
+		}
+		if userProfile := strings.TrimSpace(os.Getenv("USERPROFILE")); userProfile != "" {
+			return filepath.Join(userProfile, "."+defaultAppDirName, "logs", defaultLogFilename)
+		}
+	}
+	if stateHome := strings.TrimSpace(os.Getenv("XDG_STATE_HOME")); stateHome != "" {
+		return filepath.Join(stateHome, defaultAppDirName, "logs", defaultLogFilename)
+	}
+	if home := strings.TrimSpace(os.Getenv("HOME")); home != "" {
+		return filepath.Join(home, ".local", "state", defaultAppDirName, "logs", defaultLogFilename)
 	}
 	return DefaultContainerLogPath
 }

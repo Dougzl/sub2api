@@ -22,10 +22,11 @@ func (r *idempotencyRepository) CreateProcessing(ctx context.Context, record *se
 	if record == nil {
 		return false, nil
 	}
+	now := time.Now()
 	query := `
 		INSERT INTO idempotency_records (
-			scope, idempotency_key_hash, request_fingerprint, status, locked_until, expires_at
-		) VALUES ($1, $2, $3, $4, $5, $6)
+			scope, idempotency_key_hash, request_fingerprint, status, locked_until, expires_at, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (scope, idempotency_key_hash) DO NOTHING
 		RETURNING id, created_at, updated_at
 	`
@@ -38,6 +39,8 @@ func (r *idempotencyRepository) CreateProcessing(ctx context.Context, record *se
 		record.Status,
 		record.LockedUntil,
 		record.ExpiresAt,
+		now,
+		now,
 	}, &record.ID, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
@@ -113,7 +116,7 @@ func (r *idempotencyRepository) TryReclaim(
 		SET status = $2,
 			locked_until = $3,
 			error_reason = NULL,
-			updated_at = NOW(),
+			updated_at = $7,
 			expires_at = $4
 		WHERE id = $1
 			AND status = $5
@@ -125,6 +128,7 @@ func (r *idempotencyRepository) TryReclaim(
 		newLockedUntil,
 		newExpiresAt,
 		fromStatus,
+		now,
 		now,
 	)
 	if err != nil {
@@ -148,7 +152,7 @@ func (r *idempotencyRepository) ExtendProcessingLock(
 		UPDATE idempotency_records
 		SET locked_until = $2,
 			expires_at = $3,
-			updated_at = NOW()
+			updated_at = $6
 		WHERE id = $1
 			AND status = $4
 			AND request_fingerprint = $5
@@ -161,6 +165,7 @@ func (r *idempotencyRepository) ExtendProcessingLock(
 		newExpiresAt,
 		service.IdempotencyStatusProcessing,
 		requestFingerprint,
+		time.Now(),
 	)
 	if err != nil {
 		return false, err
@@ -181,7 +186,7 @@ func (r *idempotencyRepository) MarkSucceeded(ctx context.Context, id int64, res
 			error_reason = NULL,
 			locked_until = NULL,
 			expires_at = $5,
-			updated_at = NOW()
+			updated_at = $6
 		WHERE id = $1
 	`
 	_, err := r.sql.ExecContext(ctx, query,
@@ -190,6 +195,7 @@ func (r *idempotencyRepository) MarkSucceeded(ctx context.Context, id int64, res
 		responseStatus,
 		responseBody,
 		expiresAt,
+		time.Now(),
 	)
 	return err
 }
@@ -201,7 +207,7 @@ func (r *idempotencyRepository) MarkFailedRetryable(ctx context.Context, id int6
 			error_reason = $3,
 			locked_until = $4,
 			expires_at = $5,
-			updated_at = NOW()
+			updated_at = $6
 		WHERE id = $1
 	`
 	_, err := r.sql.ExecContext(ctx, query,
@@ -210,6 +216,7 @@ func (r *idempotencyRepository) MarkFailedRetryable(ctx context.Context, id int6
 		errorReason,
 		lockedUntil,
 		expiresAt,
+		time.Now(),
 	)
 	return err
 }
