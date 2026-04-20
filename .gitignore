@@ -135,4 +135,5 @@ docs/*
 frontend/coverage/
 aicodex
 output/
+**/__tests__
 

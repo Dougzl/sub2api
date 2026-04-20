@@ -120,6 +120,96 @@ func (r *usageCleanupRepository) ClaimNextPendingTask(ctx context.Context, stale
 	if staleRunningAfterSeconds <= 0 {
 		staleRunningAfterSeconds = 1800
 	}
+	if isSQLiteStorage() {
+		staleBefore := time.Now().Add(-time.Duration(staleRunningAfterSeconds) * time.Second)
+		var (
+			taskID     int64
+			status     string
+			filtersJSON []byte
+			createdBy  int64
+			deletedRows int64
+			errMsg     sql.NullString
+			startedAt  sql.NullTime
+			finishedAt sql.NullTime
+			createdAt  time.Time
+			updatedAt  time.Time
+		)
+		err := scanSingleRow(
+			ctx,
+			r.sql,
+			`
+			SELECT id, status, filters, created_by, deleted_rows, error_message,
+			       started_at, finished_at, created_at, updated_at
+			FROM usage_cleanup_tasks
+			WHERE status = $1
+			   OR (status = $2 AND started_at IS NOT NULL AND started_at < $3)
+			ORDER BY created_at ASC
+			LIMIT 1
+			`,
+			[]any{
+				service.UsageCleanupStatusPending,
+				service.UsageCleanupStatusRunning,
+				staleBefore,
+			},
+			&taskID,
+			&status,
+			&filtersJSON,
+			&createdBy,
+			&deletedRows,
+			&errMsg,
+			&startedAt,
+			&finishedAt,
+			&createdAt,
+			&updatedAt,
+		)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		res, err := r.sql.ExecContext(ctx, `
+			UPDATE usage_cleanup_tasks
+			SET status = $1,
+				started_at = CURRENT_TIMESTAMP,
+				finished_at = NULL,
+				error_message = NULL,
+				updated_at = CURRENT_TIMESTAMP
+			WHERE id = $2
+		`, service.UsageCleanupStatusRunning, taskID)
+		if err != nil {
+			return nil, err
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		if affected == 0 {
+			return nil, nil
+		}
+
+		task := &service.UsageCleanupTask{
+			ID:          taskID,
+			Status:      service.UsageCleanupStatusRunning,
+			CreatedBy:   createdBy,
+			DeletedRows: deletedRows,
+			CreatedAt:   createdAt,
+			UpdatedAt:   time.Now(),
+		}
+		if err := json.Unmarshal(filtersJSON, &task.Filters); err != nil {
+			return nil, fmt.Errorf("parse cleanup filters: %w", err)
+		}
+		if errMsg.Valid {
+			task.ErrorMsg = &errMsg.String
+		}
+		now := time.Now()
+		task.StartedAt = &now
+		if finishedAt.Valid {
+			task.FinishedAt = &finishedAt.Time
+		}
+		return task, nil
+	}
+
 	query := `
 		WITH next AS (
 			SELECT id
@@ -209,7 +299,7 @@ func (r *usageCleanupRepository) UpdateTaskProgress(ctx context.Context, taskID 
 	query := `
 		UPDATE usage_cleanup_tasks
 		SET deleted_rows = $1,
-			updated_at = NOW()
+			updated_at = CURRENT_TIMESTAMP
 		WHERE id = $2
 	`
 	_, err := r.sql.ExecContext(ctx, query, deletedRows, taskID)
@@ -219,6 +309,27 @@ func (r *usageCleanupRepository) UpdateTaskProgress(ctx context.Context, taskID 
 func (r *usageCleanupRepository) CancelTask(ctx context.Context, taskID int64, canceledBy int64) (bool, error) {
 	if r.client != nil {
 		return r.cancelTaskWithEnt(ctx, taskID, canceledBy)
+	}
+	if isSQLiteStorage() {
+		res, err := r.sql.ExecContext(ctx, `
+			UPDATE usage_cleanup_tasks
+			SET status = $1,
+				canceled_by = $3,
+				canceled_at = CURRENT_TIMESTAMP,
+				finished_at = CURRENT_TIMESTAMP,
+				error_message = NULL,
+				updated_at = CURRENT_TIMESTAMP
+			WHERE id = $2
+				AND status IN ($4, $5)
+		`, service.UsageCleanupStatusCanceled, taskID, canceledBy, service.UsageCleanupStatusPending, service.UsageCleanupStatusRunning)
+		if err != nil {
+			return false, err
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return false, err
+		}
+		return affected > 0, nil
 	}
 	query := `
 		UPDATE usage_cleanup_tasks
@@ -257,8 +368,8 @@ func (r *usageCleanupRepository) MarkTaskSucceeded(ctx context.Context, taskID i
 		UPDATE usage_cleanup_tasks
 		SET status = $1,
 			deleted_rows = $2,
-			finished_at = NOW(),
-			updated_at = NOW()
+			finished_at = CURRENT_TIMESTAMP,
+			updated_at = CURRENT_TIMESTAMP
 		WHERE id = $3
 	`
 	_, err := r.sql.ExecContext(ctx, query, service.UsageCleanupStatusSucceeded, deletedRows, taskID)
@@ -274,8 +385,8 @@ func (r *usageCleanupRepository) MarkTaskFailed(ctx context.Context, taskID int6
 		SET status = $1,
 			deleted_rows = $2,
 			error_message = $3,
-			finished_at = NOW(),
-			updated_at = NOW()
+			finished_at = CURRENT_TIMESTAMP,
+			updated_at = CURRENT_TIMESTAMP
 		WHERE id = $4
 	`
 	_, err := r.sql.ExecContext(ctx, query, service.UsageCleanupStatusFailed, deletedRows, errorMsg, taskID)
@@ -289,6 +400,49 @@ func (r *usageCleanupRepository) DeleteUsageLogsBatch(ctx context.Context, filte
 	whereClause, args := buildUsageCleanupWhere(filters)
 	if whereClause == "" {
 		return 0, fmt.Errorf("cleanup filters missing time range")
+	}
+	if isSQLiteStorage() {
+		query := fmt.Sprintf(`
+			SELECT id
+			FROM usage_logs
+			WHERE %s
+			ORDER BY created_at ASC, id ASC
+			LIMIT $%d
+		`, whereClause, len(args)+1)
+		argsWithLimit := append(append([]any{}, args...), limit)
+		rows, err := r.sql.QueryContext(ctx, query, argsWithLimit...)
+		if err != nil {
+			return 0, err
+		}
+		defer func() { _ = rows.Close() }()
+		ids := make([]int64, 0, limit)
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				return 0, err
+			}
+			ids = append(ids, id)
+		}
+		if err := rows.Err(); err != nil {
+			return 0, err
+		}
+		if len(ids) == 0 {
+			return 0, nil
+		}
+		deleteQuery := fmt.Sprintf("DELETE FROM usage_logs WHERE id IN (%s)", sqlitePlaceholders(len(ids)))
+		deleteArgs := make([]any, 0, len(ids))
+		for _, id := range ids {
+			deleteArgs = append(deleteArgs, id)
+		}
+		res, err := r.sql.ExecContext(ctx, deleteQuery, deleteArgs...)
+		if err != nil {
+			return 0, err
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		return affected, nil
 	}
 	args = append(args, limit)
 	query := fmt.Sprintf(`
@@ -405,6 +559,32 @@ func (r *usageCleanupRepository) createTaskWithSQL(ctx context.Context, task *se
 	filtersJSON, err := json.Marshal(task.Filters)
 	if err != nil {
 		return fmt.Errorf("marshal cleanup filters: %w", err)
+	}
+	if isSQLiteStorage() {
+		res, err := r.sql.ExecContext(ctx, `
+			INSERT INTO usage_cleanup_tasks (
+				status,
+				filters,
+				created_by,
+				deleted_rows
+			) VALUES ($1, $2, $3, $4)
+		`, task.Status, filtersJSON, task.CreatedBy, task.DeletedRows)
+		if err != nil {
+			return err
+		}
+		insertID, err := res.LastInsertId()
+		if err != nil {
+			return err
+		}
+		task.ID = insertID
+		if err := scanSingleRow(ctx, r.sql, `
+			SELECT created_at, updated_at
+			FROM usage_cleanup_tasks
+			WHERE id = $1
+		`, []any{task.ID}, &task.CreatedAt, &task.UpdatedAt); err != nil {
+			return err
+		}
+		return nil
 	}
 	query := `
 		INSERT INTO usage_cleanup_tasks (
