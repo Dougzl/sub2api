@@ -209,6 +209,15 @@ func TestUsageLogRepositoryGetAccountUsageStats_SQLiteUsesStrftime(t *testing.T)
 	if resp.History[0].Date != "2026-04-20" {
 		t.Fatalf("expected history date 2026-04-20, got %q", resp.History[0].Date)
 	}
+	if len(resp.Models) != 1 {
+		t.Fatalf("expected 1 model stat, got %d", len(resp.Models))
+	}
+	if resp.Models[0].Model != "gpt-5.4" {
+		t.Fatalf("expected model gpt-5.4, got %q", resp.Models[0].Model)
+	}
+	if resp.Models[0].Requests != 1 {
+		t.Fatalf("expected model requests=1, got %d", resp.Models[0].Requests)
+	}
 }
 
 func openUsageLogSQLiteDB(t *testing.T) *sql.DB {

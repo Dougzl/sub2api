@@ -517,6 +517,49 @@ describe('AccountUsageCell', () => {
   expect(wrapper.text()).toContain('7d|100|106540000')
   })
 
+  it('OpenAI OAuth 只有本地窗口统计时不应伪装成真实 0% 进度', async () => {
+	getUsage.mockResolvedValue({
+	  five_hour: {
+	    utilization: 0,
+	    utilization_source: 'local_stats_only',
+	    resets_at: null,
+	    remaining_seconds: 0,
+	    window_stats: {
+	      requests: 3,
+	      tokens: 4096,
+	      cost: 0.12,
+	      standard_cost: 0.12,
+	      user_cost: 0.12
+	    }
+	  },
+	  seven_day: null,
+	  seven_day_sonnet: null
+	})
+
+		const wrapper = mount(AccountUsageCell, {
+		  props: {
+		    account: makeAccount({
+		      id: 2005,
+		      platform: 'openai',
+		      type: 'oauth'
+		    })
+		  },
+	  global: {
+	    stubs: {
+	      UsageProgressBar: {
+	        props: ['label', 'utilization', 'utilizationKnown', 'windowStats', 'color'],
+	        template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ utilizationKnown }}|{{ windowStats?.tokens }}</div>'
+	      },
+	      AccountQuotaInfo: true
+	    }
+	  }
+	})
+
+	await flushPromises()
+
+  expect(wrapper.text()).toContain('5h|0|false|4096')
+  })
+
   it('Key 账号会展示 today stats 徽章并带 A/U 提示', async () => {
 		const wrapper = mount(AccountUsageCell, {
 		  props: {

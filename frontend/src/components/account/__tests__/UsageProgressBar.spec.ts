@@ -7,7 +7,7 @@ vi.mock('vue-i18n', async () => {
   return {
     ...actual,
     useI18n: () => ({
-      t: (key: string) => key
+      t: (key: string) => key === 'common.unknown' ? '未知' : key
     })
   }
 })
@@ -64,6 +64,30 @@ describe('UsageProgressBar', () => {
     })
 
     expect(wrapper.text()).toContain('2h 30m')
+    expect(wrapper.text()).not.toContain('现在')
+  })
+
+  it('未知利用率时显示“未知”而不是 0% 或“现在”', () => {
+    const wrapper = mount(UsageProgressBar, {
+      props: {
+        label: '5h',
+        utilization: 0,
+        utilizationKnown: false,
+        resetsAt: null,
+        showNowWhenIdle: true,
+        color: 'indigo',
+        windowStats: {
+          requests: 1,
+          tokens: 1234,
+          cost: 0.12,
+          standard_cost: 0.12,
+          user_cost: 0.12
+        }
+      }
+    })
+
+    expect(wrapper.text()).toContain('未知')
+    expect(wrapper.text()).not.toContain('0%')
     expect(wrapper.text()).not.toContain('现在')
   })
 })

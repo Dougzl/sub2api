@@ -112,6 +112,7 @@
           v-if="usageInfo?.five_hour"
           label="5h"
           :utilization="usageInfo.five_hour.utilization"
+          :utilization-known="usageInfo.five_hour.utilization_source !== 'local_stats_only'"
           :resets-at="usageInfo.five_hour.resets_at"
           :window-stats="usageInfo.five_hour.window_stats"
           :show-now-when-idle="true"
@@ -121,6 +122,7 @@
           v-if="usageInfo?.seven_day"
           label="7d"
           :utilization="usageInfo.seven_day.utilization"
+          :utilization-known="usageInfo.seven_day.utilization_source !== 'local_stats_only'"
           :resets-at="usageInfo.seven_day.resets_at"
           :window-stats="usageInfo.seven_day.window_stats"
           :show-now-when-idle="true"
@@ -949,13 +951,35 @@ const isAnthropicOAuthOrSetupToken = computed(() => {
   return props.account.platform === 'anthropic' && (props.account.type === 'oauth' || props.account.type === 'setup-token')
 })
 
+const shouldUseCachedUsage = (cachedData: AccountUsageInfo): boolean => {
+  if (props.account.platform !== 'openai' || props.account.type !== 'oauth') {
+    return true
+  }
+
+  const fiveHour = cachedData?.five_hour
+  const sevenDay = cachedData?.seven_day
+
+  // OpenAI OAuth accounts rely on server-side codex snapshot enrichment.
+  // If the cached payload has no windows yet, or only local window stats
+  // (without real codex percentages), always refetch so the UI can pick up
+  // newly available usage data instead of staying blank/stale for 5 minutes.
+  if (!fiveHour && !sevenDay) {
+    return false
+  }
+  if (fiveHour?.utilization_source === 'local_stats_only' || sevenDay?.utilization_source === 'local_stats_only') {
+    return false
+  }
+
+  return true
+}
+
 const loadUsage = async (options?: { source?: 'passive' | 'active'; bypassCache?: boolean }) => {
   if (!shouldFetchUsage.value) return
 
   // Check cache
   if (!options?.bypassCache) {
     const cached = _usageCache.get(props.account.id)
-    if (cached && Date.now() - cached.ts < USAGE_CACHE_TTL) {
+    if (cached && Date.now() - cached.ts < USAGE_CACHE_TTL && shouldUseCachedUsage(cached.data)) {
       usageInfo.value = cached.data
       loading.value = false
       return
