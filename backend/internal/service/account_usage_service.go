@@ -508,7 +508,26 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 		usage.SevenDay = progress
 	}
 
-	if shouldRefreshOpenAICodexSnapshot(account, usage, now) && s.shouldProbeOpenAICodexSnapshot(account, now) {
+	slog.Info("openai_usage_snapshot_state",
+		"account_id", account.ID,
+		"has_5h_snapshot", usage.FiveHour != nil,
+		"has_7d_snapshot", usage.SevenDay != nil,
+		"ws_v2_enabled", account.IsOpenAIResponsesWebSocketV2Enabled(),
+		"codex_usage_updated_at", openAICodexExtraString(account.Extra, "codex_usage_updated_at"),
+	)
+
+	shouldRefresh := shouldRefreshOpenAICodexSnapshot(account, usage, now)
+	shouldProbe := false
+	if shouldRefresh {
+		shouldProbe = s.shouldProbeOpenAICodexSnapshot(account, now)
+	} else {
+		slog.Info("openai_usage_probe_skipped",
+			"account_id", account.ID,
+			"reason", "snapshot_refresh_not_required",
+		)
+	}
+
+	if shouldRefresh && shouldProbe {
 		if updates, err := s.probeOpenAICodexSnapshot(ctx, account); err == nil && len(updates) > 0 {
 			mergeAccountExtra(account, updates)
 			if usage.UpdatedAt == nil {
@@ -520,7 +539,22 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 			if progress := buildCodexUsageProgressFromExtra(account.Extra, "7d", now); progress != nil {
 				usage.SevenDay = progress
 			}
+		} else if err != nil {
+			slog.Warn("openai_usage_probe_failed",
+				"account_id", account.ID,
+				"error", err,
+			)
+		} else {
+			slog.Info("openai_usage_probe_no_snapshot",
+				"account_id", account.ID,
+				"reason", "response_without_codex_headers",
+			)
 		}
+	} else if shouldRefresh && !shouldProbe {
+		slog.Info("openai_usage_probe_skipped",
+			"account_id", account.ID,
+			"reason", "probe_cache_active",
+		)
 	}
 
 	if s.usageLogRepo == nil {
@@ -546,6 +580,14 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 		}
 		usage.SevenDay.WindowStats = windowStatsFromAccountStats(stats)
 	}
+
+	slog.Info("openai_usage_result",
+		"account_id", account.ID,
+		"five_hour_source", openAIUsageProgressSource(usage.FiveHour),
+		"seven_day_source", openAIUsageProgressSource(usage.SevenDay),
+		"five_hour_requests", openAIUsageWindowRequests(usage.FiveHour),
+		"seven_day_requests", openAIUsageWindowRequests(usage.SevenDay),
+	)
 
 	return usage, nil
 }
@@ -650,6 +692,13 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 	if err != nil {
 		return nil, fmt.Errorf("build openai probe client: %w", err)
 	}
+	slog.Info("openai_usage_probe_request",
+		"account_id", account.ID,
+		"url", chatgptCodexURL,
+		"proxy_enabled", proxyURL != "",
+		"user_agent", req.Header.Get("User-Agent"),
+		"chatgpt_account_id_present", req.Header.Get("chatgpt-account-id") != "",
+	)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("openai codex probe request failed: %w", err)
@@ -687,8 +736,18 @@ func extractOpenAICodexProbeUpdates(resp *http.Response) (map[string]any, error)
 		return nil, nil
 	}
 	if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
+		slog.Info("openai_usage_probe_headers_detected",
+			"status_code", resp.StatusCode,
+			"has_primary_used_percent", strings.TrimSpace(resp.Header.Get("x-codex-primary-used-percent")) != "",
+			"has_secondary_used_percent", strings.TrimSpace(resp.Header.Get("x-codex-secondary-used-percent")) != "",
+		)
 		return buildCodexUsageExtraUpdates(snapshot, time.Now()), nil
 	}
+	slog.Info("openai_usage_probe_headers_missing",
+		"status_code", resp.StatusCode,
+		"x_codex_primary_used_percent", strings.TrimSpace(resp.Header.Get("x-codex-primary-used-percent")),
+		"x_codex_secondary_used_percent", strings.TrimSpace(resp.Header.Get("x-codex-secondary-used-percent")),
+	)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("openai codex probe returned status %d", resp.StatusCode)
 	}
@@ -705,6 +764,33 @@ func mergeAccountExtra(account *Account, updates map[string]any) {
 	for k, v := range updates {
 		account.Extra[k] = v
 	}
+}
+
+func openAICodexExtraString(extra map[string]any, key string) string {
+	if len(extra) == 0 {
+		return ""
+	}
+	if raw, ok := extra[key]; ok && raw != nil {
+		return strings.TrimSpace(fmt.Sprint(raw))
+	}
+	return ""
+}
+
+func openAIUsageProgressSource(progress *UsageProgress) string {
+	if progress == nil {
+		return "missing"
+	}
+	if strings.TrimSpace(progress.UtilizationSource) != "" {
+		return strings.TrimSpace(progress.UtilizationSource)
+	}
+	return "codex_snapshot"
+}
+
+func openAIUsageWindowRequests(progress *UsageProgress) int64 {
+	if progress == nil || progress.WindowStats == nil {
+		return 0
+	}
+	return progress.WindowStats.Requests
 }
 
 func (s *AccountUsageService) getGeminiUsage(ctx context.Context, account *Account) (*UsageInfo, error) {

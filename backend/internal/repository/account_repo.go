@@ -1091,6 +1091,44 @@ func (r *accountRepository) SetModelRateLimit(ctx context.Context, id int64, sco
 		return err
 	}
 
+	if isSQLiteStorage() {
+		accountModel, err := r.client.Account.
+			Query().
+			Where(dbaccount.IDEQ(id), dbaccount.DeletedAtIsNil()).
+			Only(ctx)
+		if err != nil {
+			if dbent.IsNotFound(err) {
+				return service.ErrAccountNotFound
+			}
+			return err
+		}
+
+		merged := cloneJSONMap(accountModel.Extra)
+		if merged == nil {
+			merged = make(map[string]any, 1)
+		}
+		modelRateLimits := cloneNestedJSONMap(merged["model_rate_limits"])
+		if modelRateLimits == nil {
+			modelRateLimits = make(map[string]any, 1)
+		}
+		modelRateLimits[scope] = map[string]any{
+			"rate_limited_at":     payload["rate_limited_at"],
+			"rate_limit_reset_at": payload["rate_limit_reset_at"],
+		}
+		merged["model_rate_limits"] = modelRateLimits
+
+		if _, err := r.client.Account.
+			UpdateOneID(id).
+			SetExtra(merged).
+			Save(ctx); err != nil {
+			return err
+		}
+		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
+			logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue model rate limit failed: account=%d err=%v", id, err)
+		}
+		return nil
+	}
+
 	client := clientFromContext(ctx, r.client)
 	result, err := client.ExecContext(
 		ctx,
@@ -1194,6 +1232,10 @@ func (r *accountRepository) ClearRateLimit(ctx context.Context, id int64) error 
 }
 
 func (r *accountRepository) ClearAntigravityQuotaScopes(ctx context.Context, id int64) error {
+	if isSQLiteStorage() {
+		return r.removeExtraKey(ctx, id, "antigravity_quota_scopes", "[SchedulerOutbox] enqueue clear quota scopes failed")
+	}
+
 	client := clientFromContext(ctx, r.client)
 	result, err := client.ExecContext(
 		ctx,
@@ -1218,6 +1260,10 @@ func (r *accountRepository) ClearAntigravityQuotaScopes(ctx context.Context, id 
 }
 
 func (r *accountRepository) ClearModelRateLimits(ctx context.Context, id int64) error {
+	if isSQLiteStorage() {
+		return r.removeExtraKey(ctx, id, "model_rate_limits", "[SchedulerOutbox] enqueue clear model rate limit failed")
+	}
+
 	client := clientFromContext(ctx, r.client)
 	result, err := client.ExecContext(
 		ctx,
@@ -1312,6 +1358,43 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 		return nil
 	}
 
+	if isSQLiteStorage() {
+		accountModel, err := r.client.Account.
+			Query().
+			Where(dbaccount.IDEQ(id), dbaccount.DeletedAtIsNil()).
+			Only(ctx)
+		if err != nil {
+			if dbent.IsNotFound(err) {
+				return service.ErrAccountNotFound
+			}
+			return err
+		}
+
+		merged := cloneJSONMap(accountModel.Extra)
+		if merged == nil {
+			merged = make(map[string]any, len(updates))
+		}
+		for key, value := range updates {
+			merged[key] = value
+		}
+
+		if _, err := r.client.Account.
+			UpdateOneID(id).
+			SetExtra(merged).
+			Save(ctx); err != nil {
+			return err
+		}
+
+		if shouldEnqueueSchedulerOutboxForExtraUpdates(updates) {
+			if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
+				logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue extra update failed: account=%d err=%v", id, err)
+			}
+		} else {
+			r.syncSchedulerAccountSnapshot(ctx, id)
+		}
+		return nil
+	}
+
 	// 使用 JSONB 合并操作实现原子更新，避免读-改-写的并发丢失更新问题
 	payload, err := json.Marshal(updates)
 	if err != nil {
@@ -1345,6 +1428,65 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 		// 让 sticky session / GetAccount 命中缓存时也能读到最新数据，
 		// 同时避免缓存局部 patch 覆盖掉并发写入的其它账号字段。
 		r.syncSchedulerAccountSnapshot(ctx, id)
+	}
+	return nil
+}
+
+func cloneJSONMap(src map[string]any) map[string]any {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]any, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
+}
+
+func cloneNestedJSONMap(value any) map[string]any {
+	if value == nil {
+		return nil
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneJSONMap(typed)
+	case map[string]string:
+		out := make(map[string]any, len(typed))
+		for key, val := range typed {
+			out[key] = val
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func (r *accountRepository) removeExtraKey(ctx context.Context, id int64, key, enqueueLog string) error {
+	accountModel, err := r.client.Account.
+		Query().
+		Where(dbaccount.IDEQ(id), dbaccount.DeletedAtIsNil()).
+		Only(ctx)
+	if err != nil {
+		if dbent.IsNotFound(err) {
+			return service.ErrAccountNotFound
+		}
+		return err
+	}
+
+	merged := cloneJSONMap(accountModel.Extra)
+	if merged == nil {
+		merged = map[string]any{}
+	}
+	delete(merged, key)
+
+	if _, err := r.client.Account.
+		UpdateOneID(id).
+		SetExtra(merged).
+		Save(ctx); err != nil {
+		return err
+	}
+	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
+		logger.LegacyPrintf("repository.account", enqueueLog+": account=%d err=%v", id, err)
 	}
 	return nil
 }
@@ -2060,6 +2202,55 @@ const nextWeeklyResetAtExpr = `(
 // 日/周额度在周期过期时自动重置为 0 再递增。
 // 支持滚动窗口（rolling）和固定时间（fixed）两种重置模式。
 func (r *accountRepository) IncrementQuotaUsed(ctx context.Context, id int64, amount float64) error {
+	if isSQLiteStorage() {
+		accountModel, err := r.client.Account.
+			Query().
+			Where(dbaccount.IDEQ(id), dbaccount.DeletedAtIsNil()).
+			Only(ctx)
+		if err != nil {
+			if dbent.IsNotFound(err) {
+				return service.ErrAccountNotFound
+			}
+			return err
+		}
+
+		merged := cloneJSONMap(accountModel.Extra)
+		if merged == nil {
+			merged = make(map[string]any)
+		}
+		prevUsed := extraNumber(merged["quota_used"])
+		newUsed := prevUsed + amount
+		merged["quota_used"] = newUsed
+
+		if extraNumber(merged["quota_daily_limit"]) > 0 {
+			merged["quota_daily_used"] = extraNumber(merged["quota_daily_used"]) + amount
+			if _, ok := merged["quota_daily_start"]; !ok {
+				merged["quota_daily_start"] = time.Now().UTC().Format(time.RFC3339)
+			}
+		}
+		if extraNumber(merged["quota_weekly_limit"]) > 0 {
+			merged["quota_weekly_used"] = extraNumber(merged["quota_weekly_used"]) + amount
+			if _, ok := merged["quota_weekly_start"]; !ok {
+				merged["quota_weekly_start"] = time.Now().UTC().Format(time.RFC3339)
+			}
+		}
+
+		if _, err := r.client.Account.
+			UpdateOneID(id).
+			SetExtra(merged).
+			Save(ctx); err != nil {
+			return err
+		}
+
+		limit := extraNumber(merged["quota_limit"])
+		if limit > 0 && newUsed >= limit && prevUsed < limit {
+			if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
+				logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue quota exceeded failed: account=%d err=%v", id, err)
+			}
+		}
+		return nil
+	}
+
 	rows, err := r.sql.QueryContext(ctx,
 		`UPDATE accounts SET extra = (
 			COALESCE(extra, '{}'::jsonb)
@@ -2132,6 +2323,42 @@ func (r *accountRepository) IncrementQuotaUsed(ctx context.Context, id int64, am
 // ResetQuotaUsed 重置账号所有维度的配额用量为 0
 // 保留固定重置模式的配置字段（quota_daily_reset_mode 等），仅清零用量和窗口起始时间
 func (r *accountRepository) ResetQuotaUsed(ctx context.Context, id int64) error {
+	if isSQLiteStorage() {
+		accountModel, err := r.client.Account.
+			Query().
+			Where(dbaccount.IDEQ(id), dbaccount.DeletedAtIsNil()).
+			Only(ctx)
+		if err != nil {
+			if dbent.IsNotFound(err) {
+				return service.ErrAccountNotFound
+			}
+			return err
+		}
+
+		merged := cloneJSONMap(accountModel.Extra)
+		if merged == nil {
+			merged = make(map[string]any)
+		}
+		merged["quota_used"] = float64(0)
+		merged["quota_daily_used"] = float64(0)
+		merged["quota_weekly_used"] = float64(0)
+		delete(merged, "quota_daily_start")
+		delete(merged, "quota_weekly_start")
+		delete(merged, "quota_daily_reset_at")
+		delete(merged, "quota_weekly_reset_at")
+
+		if _, err := r.client.Account.
+			UpdateOneID(id).
+			SetExtra(merged).
+			Save(ctx); err != nil {
+			return err
+		}
+		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
+			logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue quota reset failed: account=%d err=%v", id, err)
+		}
+		return nil
+	}
+
 	_, err := r.sql.ExecContext(ctx,
 		`UPDATE accounts SET extra = (
 			COALESCE(extra, '{}'::jsonb)
@@ -2147,4 +2374,28 @@ func (r *accountRepository) ResetQuotaUsed(ctx context.Context, id int64) error 
 		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue quota reset failed: account=%d err=%v", id, err)
 	}
 	return nil
+}
+
+func extraNumber(value any) float64 {
+	switch typed := value.(type) {
+	case float64:
+		return typed
+	case float32:
+		return float64(typed)
+	case int:
+		return float64(typed)
+	case int64:
+		return float64(typed)
+	case int32:
+		return float64(typed)
+	case json.Number:
+		if parsed, err := typed.Float64(); err == nil {
+			return parsed
+		}
+	case string:
+		if parsed, err := strconv.ParseFloat(strings.TrimSpace(typed), 64); err == nil {
+			return parsed
+		}
+	}
+	return 0
 }

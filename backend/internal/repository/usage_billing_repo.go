@@ -66,6 +66,52 @@ func (r *usageBillingRepository) Apply(ctx context.Context, cmd *service.UsageBi
 }
 
 func (r *usageBillingRepository) claimUsageBillingKey(ctx context.Context, tx *sql.Tx, cmd *service.UsageBillingCommand) (bool, error) {
+	if isSQLiteStorage() {
+		res, err := tx.ExecContext(ctx, `
+			INSERT INTO usage_billing_dedup (request_id, api_key_id, request_fingerprint)
+			VALUES ($1, $2, $3)
+			ON CONFLICT (request_id, api_key_id) DO NOTHING
+		`, cmd.RequestID, cmd.APIKeyID, cmd.RequestFingerprint)
+		if err != nil {
+			return false, err
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return false, err
+		}
+		if affected > 0 {
+			var archivedFingerprint string
+			err = tx.QueryRowContext(ctx, `
+				SELECT request_fingerprint
+				FROM usage_billing_dedup_archive
+				WHERE request_id = $1 AND api_key_id = $2
+			`, cmd.RequestID, cmd.APIKeyID).Scan(&archivedFingerprint)
+			if err == nil {
+				if strings.TrimSpace(archivedFingerprint) != strings.TrimSpace(cmd.RequestFingerprint) {
+					return false, service.ErrUsageBillingRequestConflict
+				}
+				return false, nil
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return false, err
+			}
+			return true, nil
+		}
+
+		var existingFingerprint string
+		if err := tx.QueryRowContext(ctx, `
+			SELECT request_fingerprint
+			FROM usage_billing_dedup
+			WHERE request_id = $1 AND api_key_id = $2
+		`, cmd.RequestID, cmd.APIKeyID).Scan(&existingFingerprint); err != nil {
+			return false, err
+		}
+		if strings.TrimSpace(existingFingerprint) != strings.TrimSpace(cmd.RequestFingerprint) {
+			return false, service.ErrUsageBillingRequestConflict
+		}
+		return false, nil
+	}
+
 	var id int64
 	err := tx.QueryRowContext(ctx, `
 		INSERT INTO usage_billing_dedup (request_id, api_key_id, request_fingerprint)
@@ -180,6 +226,33 @@ func incrementUsageBillingSubscription(ctx context.Context, tx *sql.Tx, subscrip
 }
 
 func deductUsageBillingBalance(ctx context.Context, tx *sql.Tx, userID int64, amount float64) (float64, error) {
+	if isSQLiteStorage() {
+		res, err := tx.ExecContext(ctx, `
+			UPDATE users
+			SET balance = balance - $1,
+				updated_at = CURRENT_TIMESTAMP
+			WHERE id = $2 AND deleted_at IS NULL
+		`, amount, userID)
+		if err != nil {
+			return 0, err
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		if affected == 0 {
+			return 0, service.ErrUserNotFound
+		}
+		var newBalance float64
+		if err := tx.QueryRowContext(ctx, `SELECT balance FROM users WHERE id = $1 AND deleted_at IS NULL`, userID).Scan(&newBalance); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return 0, service.ErrUserNotFound
+			}
+			return 0, err
+		}
+		return newBalance, nil
+	}
+
 	var newBalance float64
 	err := tx.QueryRowContext(ctx, `
 		UPDATE users
@@ -198,6 +271,47 @@ func deductUsageBillingBalance(ctx context.Context, tx *sql.Tx, userID int64, am
 }
 
 func incrementUsageBillingAPIKeyQuota(ctx context.Context, tx *sql.Tx, apiKeyID int64, amount float64) (bool, error) {
+	if isSQLiteStorage() {
+		res, err := tx.ExecContext(ctx, `
+			UPDATE api_keys
+			SET quota_used = quota_used + $1,
+				status = CASE
+					WHEN quota > 0
+						AND status = $3
+						AND quota_used < quota
+						AND quota_used + $1 >= quota
+					THEN $4
+					ELSE status
+				END,
+				updated_at = CURRENT_TIMESTAMP
+			WHERE id = $2 AND deleted_at IS NULL
+		`, amount, apiKeyID, service.StatusAPIKeyActive, service.StatusAPIKeyQuotaExhausted)
+		if err != nil {
+			return false, err
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return false, err
+		}
+		if affected == 0 {
+			return false, service.ErrAPIKeyNotFound
+		}
+
+		var quota, quotaUsed float64
+		if err := tx.QueryRowContext(ctx, `
+			SELECT quota, quota_used
+			FROM api_keys
+			WHERE id = $1 AND deleted_at IS NULL
+		`, apiKeyID).Scan(&quota, &quotaUsed); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return false, service.ErrAPIKeyNotFound
+			}
+			return false, err
+		}
+		exhausted := quota > 0 && quotaUsed >= quota && (quotaUsed-amount) < quota
+		return exhausted, nil
+	}
+
 	var exhausted bool
 	err := tx.QueryRowContext(ctx, `
 		UPDATE api_keys
