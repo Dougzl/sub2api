@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"math/rand/v2"
@@ -736,9 +737,18 @@ func extractOpenAICodexProbeUpdates(resp *http.Response) (map[string]any, error)
 	if resp == nil {
 		return nil, nil
 	}
+	var bodyPreview string
+	if resp.Body != nil {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		if len(bodyBytes) > 0 {
+			bodyPreview = truncateOpenAIProbeBody(bodyBytes, 2048)
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	}
 	slog.Info("openai_usage_probe_all_headers",
 		"status_code", resp.StatusCode,
 		"headers", flattenHTTPHeaders(resp.Header),
+		"body_preview", bodyPreview,
 	)
 	primaryUsedPercent := strings.TrimSpace(resp.Header.Get("x-codex-primary-used-percent"))
 	primaryResetAfterSeconds := strings.TrimSpace(resp.Header.Get("x-codex-primary-reset-after-seconds"))
@@ -782,6 +792,16 @@ func flattenHTTPHeaders(header http.Header) map[string]string {
 		flat[key] = strings.Join(values, ", ")
 	}
 	return flat
+}
+
+func truncateOpenAIProbeBody(body []byte, limit int) string {
+	if limit <= 0 {
+		limit = 1024
+	}
+	if len(body) <= limit {
+		return string(body)
+	}
+	return string(body[:limit]) + "...(truncated)"
 }
 
 func mergeAccountExtra(account *Account, updates map[string]any) {
