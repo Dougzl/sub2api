@@ -367,10 +367,17 @@ func (r *channelRepository) ListAll(ctx context.Context) ([]service.Channel, err
 
 // batchLoadGroupIDs 批量加载多个渠道的分组 ID
 func (r *channelRepository) batchLoadGroupIDs(ctx context.Context, channelIDs []int64) (map[int64][]int64, error) {
+	query := `SELECT channel_id, group_id FROM channel_groups
+		 WHERE channel_id = ANY($1) ORDER BY channel_id, group_id`
+	args := []any{pq.Array(channelIDs)}
+	if isSQLiteStorage() {
+		query = `SELECT channel_id, group_id FROM channel_groups
+		 WHERE channel_id IN (` + sqlitePlaceholders(len(channelIDs)) + `) ORDER BY channel_id, group_id`
+		args = int64Args(channelIDs)
+	}
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT channel_id, group_id FROM channel_groups
-		 WHERE channel_id = ANY($1) ORDER BY channel_id, group_id`,
-		pq.Array(channelIDs),
+		query,
+		args...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("batch load group ids: %w", err)
@@ -451,9 +458,15 @@ func (r *channelRepository) GetGroupsInOtherChannels(ctx context.Context, channe
 	if len(groupIDs) == 0 {
 		return nil, nil
 	}
+	query := `SELECT group_id FROM channel_groups WHERE group_id = ANY($1) AND channel_id != $2`
+	args := []any{pq.Array(groupIDs), channelID}
+	if isSQLiteStorage() {
+		query = `SELECT group_id FROM channel_groups WHERE group_id IN (` + sqlitePlaceholders(len(groupIDs)) + `) AND channel_id != ?`
+		args = append(int64Args(groupIDs), channelID)
+	}
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT group_id FROM channel_groups WHERE group_id = ANY($1) AND channel_id != $2`,
-		pq.Array(groupIDs), channelID,
+		query,
+		args...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get groups in other channels: %w", err)
@@ -526,9 +539,15 @@ func (r *channelRepository) GetGroupPlatforms(ctx context.Context, groupIDs []in
 	if len(groupIDs) == 0 {
 		return make(map[int64]string), nil
 	}
+	query := `SELECT id, platform FROM groups WHERE id = ANY($1)`
+	args := []any{pq.Array(groupIDs)}
+	if isSQLiteStorage() {
+		query = `SELECT id, platform FROM groups WHERE id IN (` + sqlitePlaceholders(len(groupIDs)) + `)`
+		args = int64Args(groupIDs)
+	}
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, platform FROM groups WHERE id = ANY($1)`,
-		pq.Array(groupIDs),
+		query,
+		args...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get group platforms: %w", err)

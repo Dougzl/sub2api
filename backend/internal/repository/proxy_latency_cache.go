@@ -23,9 +23,16 @@ func NewProxyLatencyCache(rdb *redis.Client) service.ProxyLatencyCache {
 	return &proxyLatencyCache{rdb: rdb}
 }
 
+func (c *proxyLatencyCache) unavailable() bool {
+	return c == nil || c.rdb == nil
+}
+
 func (c *proxyLatencyCache) GetProxyLatencies(ctx context.Context, proxyIDs []int64) (map[int64]*service.ProxyLatencyInfo, error) {
 	results := make(map[int64]*service.ProxyLatencyInfo)
 	if len(proxyIDs) == 0 {
+		return results, nil
+	}
+	if c.unavailable() {
 		return results, nil
 	}
 
@@ -64,6 +71,9 @@ func (c *proxyLatencyCache) GetProxyLatencies(ctx context.Context, proxyIDs []in
 
 func (c *proxyLatencyCache) SetProxyLatency(ctx context.Context, proxyID int64, info *service.ProxyLatencyInfo) error {
 	if info == nil {
+		return nil
+	}
+	if c.unavailable() {
 		return nil
 	}
 	payload, err := json.Marshal(info)

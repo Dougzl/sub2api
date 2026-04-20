@@ -66,7 +66,7 @@ func (r *userGroupRateRepository) GetByUserIDs(ctx context.Context, userIDs []in
 	if len(uniqueIDs) == 0 {
 		return result, nil
 	}
-	if isH2Storage() {
+	if isSQLiteStorage() {
 		for _, userID := range uniqueIDs {
 			rates, err := r.GetByUserID(ctx, userID)
 			if err != nil {
@@ -171,16 +171,38 @@ func (r *userGroupRateRepository) SyncUserGroupRates(ctx context.Context, userID
 
 	// 删除指定的记录
 	if len(toDelete) > 0 {
-		if _, err := r.sql.ExecContext(ctx,
-			`DELETE FROM user_group_rate_multipliers WHERE user_id = $1 AND group_id = ANY($2)`,
-			userID, pq.Array(toDelete)); err != nil {
-			return err
+		if isSQLiteStorage() {
+			args := append([]any{userID}, int64Args(toDelete)...)
+			if _, err := r.sql.ExecContext(ctx,
+				`DELETE FROM user_group_rate_multipliers WHERE user_id = ? AND group_id IN (`+sqlitePlaceholders(len(toDelete))+`)`,
+				args...); err != nil {
+				return err
+			}
+		} else {
+			if _, err := r.sql.ExecContext(ctx,
+				`DELETE FROM user_group_rate_multipliers WHERE user_id = $1 AND group_id = ANY($2)`,
+				userID, pq.Array(toDelete)); err != nil {
+				return err
+			}
 		}
 	}
 
 	// Upsert 记录
 	now := time.Now()
 	if len(upsertGroupIDs) > 0 {
+		if isSQLiteStorage() {
+			for i, groupID := range upsertGroupIDs {
+				if _, err := r.sql.ExecContext(ctx, `
+					INSERT INTO user_group_rate_multipliers (user_id, group_id, rate_multiplier, created_at, updated_at)
+					VALUES (?, ?, ?, ?, ?)
+					ON CONFLICT(user_id, group_id)
+					DO UPDATE SET rate_multiplier = excluded.rate_multiplier, updated_at = excluded.updated_at
+				`, userID, groupID, upsertRates[i], now, now); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
 		_, err := r.sql.ExecContext(ctx, `
 			INSERT INTO user_group_rate_multipliers (user_id, group_id, rate_multiplier, created_at, updated_at)
 			SELECT
@@ -218,6 +240,19 @@ func (r *userGroupRateRepository) SyncGroupRateMultipliers(ctx context.Context, 
 		rates[i] = e.RateMultiplier
 	}
 	now := time.Now()
+	if isSQLiteStorage() {
+		for i, userID := range userIDs {
+			if _, err := r.sql.ExecContext(ctx, `
+				INSERT INTO user_group_rate_multipliers (user_id, group_id, rate_multiplier, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?)
+				ON CONFLICT(user_id, group_id)
+				DO UPDATE SET rate_multiplier = excluded.rate_multiplier, updated_at = excluded.updated_at
+			`, userID, groupID, rates[i], now, now); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	_, err := r.sql.ExecContext(ctx, `
 		INSERT INTO user_group_rate_multipliers (user_id, group_id, rate_multiplier, created_at, updated_at)
 		SELECT data.user_id, $1::bigint, data.rate_multiplier, $2::timestamptz, $2::timestamptz

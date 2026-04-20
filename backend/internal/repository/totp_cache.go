@@ -28,8 +28,15 @@ func NewTotpCache(rdb *redis.Client) service.TotpCache {
 	return &TotpCache{rdb: rdb}
 }
 
+func (c *TotpCache) unavailable() bool {
+	return c == nil || c.rdb == nil
+}
+
 // GetSetupSession retrieves a TOTP setup session
 func (c *TotpCache) GetSetupSession(ctx context.Context, userID int64) (*service.TotpSetupSession, error) {
+	if c.unavailable() {
+		return nil, nil
+	}
 	key := fmt.Sprintf("%s%d", totpSetupKeyPrefix, userID)
 	data, err := c.rdb.Get(ctx, key).Bytes()
 	if err != nil {
@@ -49,6 +56,9 @@ func (c *TotpCache) GetSetupSession(ctx context.Context, userID int64) (*service
 
 // SetSetupSession stores a TOTP setup session
 func (c *TotpCache) SetSetupSession(ctx context.Context, userID int64, session *service.TotpSetupSession, ttl time.Duration) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := fmt.Sprintf("%s%d", totpSetupKeyPrefix, userID)
 	data, err := json.Marshal(session)
 	if err != nil {
@@ -64,12 +74,18 @@ func (c *TotpCache) SetSetupSession(ctx context.Context, userID int64, session *
 
 // DeleteSetupSession deletes a TOTP setup session
 func (c *TotpCache) DeleteSetupSession(ctx context.Context, userID int64) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := fmt.Sprintf("%s%d", totpSetupKeyPrefix, userID)
 	return c.rdb.Del(ctx, key).Err()
 }
 
 // GetLoginSession retrieves a TOTP login session
 func (c *TotpCache) GetLoginSession(ctx context.Context, tempToken string) (*service.TotpLoginSession, error) {
+	if c.unavailable() {
+		return nil, nil
+	}
 	key := totpLoginKeyPrefix + tempToken
 	data, err := c.rdb.Get(ctx, key).Bytes()
 	if err != nil {
@@ -89,6 +105,9 @@ func (c *TotpCache) GetLoginSession(ctx context.Context, tempToken string) (*ser
 
 // SetLoginSession stores a TOTP login session
 func (c *TotpCache) SetLoginSession(ctx context.Context, tempToken string, session *service.TotpLoginSession, ttl time.Duration) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := totpLoginKeyPrefix + tempToken
 	data, err := json.Marshal(session)
 	if err != nil {
@@ -104,12 +123,18 @@ func (c *TotpCache) SetLoginSession(ctx context.Context, tempToken string, sessi
 
 // DeleteLoginSession deletes a TOTP login session
 func (c *TotpCache) DeleteLoginSession(ctx context.Context, tempToken string) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := totpLoginKeyPrefix + tempToken
 	return c.rdb.Del(ctx, key).Err()
 }
 
 // IncrementVerifyAttempts increments the verify attempt counter
 func (c *TotpCache) IncrementVerifyAttempts(ctx context.Context, userID int64) (int, error) {
+	if c.unavailable() {
+		return 0, nil
+	}
 	key := fmt.Sprintf("%s%d", totpAttemptsKeyPrefix, userID)
 
 	// Use pipeline for atomic increment and set TTL
@@ -131,6 +156,9 @@ func (c *TotpCache) IncrementVerifyAttempts(ctx context.Context, userID int64) (
 
 // GetVerifyAttempts gets the current verify attempt count
 func (c *TotpCache) GetVerifyAttempts(ctx context.Context, userID int64) (int, error) {
+	if c.unavailable() {
+		return 0, nil
+	}
 	key := fmt.Sprintf("%s%d", totpAttemptsKeyPrefix, userID)
 	count, err := c.rdb.Get(ctx, key).Int()
 	if err != nil {
@@ -144,6 +172,9 @@ func (c *TotpCache) GetVerifyAttempts(ctx context.Context, userID int64) (int, e
 
 // ClearVerifyAttempts clears the verify attempt counter
 func (c *TotpCache) ClearVerifyAttempts(ctx context.Context, userID int64) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := fmt.Sprintf("%s%d", totpAttemptsKeyPrefix, userID)
 	return c.rdb.Del(ctx, key).Err()
 }

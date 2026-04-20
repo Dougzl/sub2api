@@ -3,9 +3,11 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -141,4 +143,86 @@ func TestAccountTestService_OpenAI429PersistsSnapshotWithoutRateLimit(t *testing
 	require.Zero(t, repo.rateLimitedID)
 	require.Nil(t, repo.rateLimitedAt)
 	require.Nil(t, account.RateLimitResetAt)
+}
+
+func TestAccountTestService_SendErrorAndEndDoesNotLog(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, recorder := newTestContext()
+
+	var buf bytes.Buffer
+	origWriter := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() {
+		log.SetOutput(origWriter)
+	})
+
+	svc := &AccountTestService{}
+	err := svc.sendErrorAndEnd(ctx, "expected business error")
+	require.Error(t, err)
+	require.Contains(t, recorder.Body.String(), `"type":"error"`)
+	require.Contains(t, recorder.Body.String(), `"error":"expected business error"`)
+	require.Empty(t, buf.String(), "sendErrorAndEnd should not write logs directly")
+}
+
+func TestShouldWarnAccountTestBusinessError(t *testing.T) {
+	cases := []struct {
+		name      string
+		errorType string
+		errorMsg  string
+		want      bool
+	}{
+		{name: "openai usage limit type", errorType: "usage_limit_reached", errorMsg: "The usage limit has been reached", want: true},
+		{name: "rate limited message", errorType: "", errorMsg: "rate limited by upstream", want: true},
+		{name: "forbidden message", errorType: "", errorMsg: "Access forbidden (403): account may be suspended or lack permissions", want: true},
+		{name: "unsupported model type", errorType: "unsupported_model", errorMsg: "model not supported", want: true},
+		{name: "system timeout", errorType: "", errorMsg: "stream read error: context deadline exceeded", want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, shouldWarnAccountTestBusinessError(tc.errorType, tc.errorMsg))
+		})
+	}
+}
+
+func TestAccountTestService_ProcessOpenAIStream_BusinessErrorReturnsWarnClassifiedError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, recorder := newTestContext()
+
+	svc := &AccountTestService{}
+	body := strings.NewReader("data: {\"type\":\"error\",\"error\":{\"type\":\"usage_limit_reached\",\"message\":\"The usage limit has been reached\"}}\n\n")
+
+	err := svc.processOpenAIStream(ctx, body)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "usage limit")
+	require.Contains(t, recorder.Body.String(), `"type":"error"`)
+	require.Contains(t, recorder.Body.String(), `"The usage limit has been reached"`)
+}
+
+func TestAccountTestService_ProcessClaudeStream_BusinessMessageUsesClassifier(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, recorder := newTestContext()
+
+	svc := &AccountTestService{}
+	body := strings.NewReader("data: {\"type\":\"error\",\"error\":{\"message\":\"account requires verification\"}}\n\n")
+
+	err := svc.processClaudeStream(ctx, body)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "verification")
+	require.Contains(t, recorder.Body.String(), `"type":"error"`)
+	require.Contains(t, recorder.Body.String(), `"account requires verification"`)
+}
+
+func TestAccountTestService_ProcessGeminiStream_BusinessMessageUsesClassifier(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, recorder := newTestContext()
+
+	svc := &AccountTestService{}
+	body := strings.NewReader("data: {\"error\":{\"message\":\"quota exhausted for current window\"}}\n\n")
+
+	err := svc.processGeminiStream(ctx, body)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "quota exhausted")
+	require.Contains(t, recorder.Body.String(), `"type":"error"`)
+	require.Contains(t, recorder.Body.String(), `"quota exhausted for current window"`)
 }

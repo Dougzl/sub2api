@@ -25,17 +25,32 @@ func buildSessionKey(groupID int64, sessionHash string) string {
 	return fmt.Sprintf("%s%d:%s", stickySessionPrefix, groupID, sessionHash)
 }
 
+// unavailable 当 Redis 未启用（如 sqlite 单机模式）时，rdb 为 nil，
+// 此时所有粘性会话操作应降级为无操作，读取返回 redis.Nil 让调用方按缓存未命中处理。
+func (c *gatewayCache) unavailable() bool {
+	return c == nil || c.rdb == nil
+}
+
 func (c *gatewayCache) GetSessionAccountID(ctx context.Context, groupID int64, sessionHash string) (int64, error) {
+	if c.unavailable() {
+		return 0, redis.Nil
+	}
 	key := buildSessionKey(groupID, sessionHash)
 	return c.rdb.Get(ctx, key).Int64()
 }
 
 func (c *gatewayCache) SetSessionAccountID(ctx context.Context, groupID int64, sessionHash string, accountID int64, ttl time.Duration) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := buildSessionKey(groupID, sessionHash)
 	return c.rdb.Set(ctx, key, accountID, ttl).Err()
 }
 
 func (c *gatewayCache) RefreshSessionTTL(ctx context.Context, groupID int64, sessionHash string, ttl time.Duration) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := buildSessionKey(groupID, sessionHash)
 	return c.rdb.Expire(ctx, key, ttl).Err()
 }
@@ -48,6 +63,9 @@ func (c *gatewayCache) RefreshSessionTTL(ctx context.Context, groupID int64, ses
 // Called when the bound account becomes unavailable (e.g., error status, disabled,
 // or unschedulable), allowing subsequent requests to select a new available account.
 func (c *gatewayCache) DeleteSessionAccountID(ctx context.Context, groupID int64, sessionHash string) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := buildSessionKey(groupID, sessionHash)
 	return c.rdb.Del(ctx, key).Err()
 }

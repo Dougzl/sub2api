@@ -3,8 +3,11 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
+	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -147,17 +150,20 @@ func (r *usageBillingRepository) applyUsageBillingEffects(ctx context.Context, t
 
 func incrementUsageBillingSubscription(ctx context.Context, tx *sql.Tx, subscriptionID int64, costUSD float64) error {
 	const updateSQL = `
-		UPDATE user_subscriptions us
+		UPDATE user_subscriptions
 		SET
-			daily_usage_usd = us.daily_usage_usd + $1,
-			weekly_usage_usd = us.weekly_usage_usd + $1,
-			monthly_usage_usd = us.monthly_usage_usd + $1,
-			updated_at = NOW()
-		FROM groups g
-		WHERE us.id = $2
-			AND us.deleted_at IS NULL
-			AND us.group_id = g.id
-			AND g.deleted_at IS NULL
+			daily_usage_usd = daily_usage_usd + $1,
+			weekly_usage_usd = weekly_usage_usd + $1,
+			monthly_usage_usd = monthly_usage_usd + $1,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE id = $2
+			AND deleted_at IS NULL
+			AND EXISTS (
+				SELECT 1
+				FROM groups g
+				WHERE g.id = user_subscriptions.group_id
+				  AND g.deleted_at IS NULL
+			)
 	`
 	res, err := tx.ExecContext(ctx, updateSQL, costUSD, subscriptionID)
 	if err != nil {
@@ -178,7 +184,7 @@ func deductUsageBillingBalance(ctx context.Context, tx *sql.Tx, userID int64, am
 	err := tx.QueryRowContext(ctx, `
 		UPDATE users
 		SET balance = balance - $1,
-			updated_at = NOW()
+			updated_at = CURRENT_TIMESTAMP
 		WHERE id = $2 AND deleted_at IS NULL
 		RETURNING balance
 	`, amount, userID).Scan(&newBalance)
@@ -204,7 +210,7 @@ func incrementUsageBillingAPIKeyQuota(ctx context.Context, tx *sql.Tx, apiKeyID 
 				THEN $4
 				ELSE status
 			END,
-			updated_at = NOW()
+			updated_at = CURRENT_TIMESTAMP
 		WHERE id = $2 AND deleted_at IS NULL
 		RETURNING quota > 0 AND quota_used >= quota AND quota_used - $1 < quota
 	`, amount, apiKeyID, service.StatusAPIKeyActive, service.StatusAPIKeyQuotaExhausted).Scan(&exhausted)
@@ -218,6 +224,9 @@ func incrementUsageBillingAPIKeyQuota(ctx context.Context, tx *sql.Tx, apiKeyID 
 }
 
 func incrementUsageBillingAPIKeyRateLimit(ctx context.Context, tx *sql.Tx, apiKeyID int64, cost float64) error {
+	if isSQLiteStorage() {
+		return incrementUsageBillingAPIKeyRateLimitSQLite(ctx, tx, apiKeyID, cost)
+	}
 	res, err := tx.ExecContext(ctx, `
 		UPDATE api_keys SET
 			usage_5h = CASE WHEN window_5h_start IS NOT NULL AND window_5h_start + INTERVAL '5 hours' <= NOW() THEN $1 ELSE usage_5h + $1 END,
@@ -243,6 +252,9 @@ func incrementUsageBillingAPIKeyRateLimit(ctx context.Context, tx *sql.Tx, apiKe
 }
 
 func incrementUsageBillingAccountQuota(ctx context.Context, tx *sql.Tx, accountID int64, amount float64) (*service.AccountQuotaState, error) {
+	if isSQLiteStorage() {
+		return incrementUsageBillingAccountQuotaSQLite(ctx, tx, accountID, amount)
+	}
 	rows, err := tx.QueryContext(ctx,
 		`UPDATE accounts SET extra = (
 			COALESCE(extra, '{}'::jsonb)
@@ -317,4 +329,157 @@ func incrementUsageBillingAccountQuota(ctx context.Context, tx *sql.Tx, accountI
 		}
 	}
 	return &state, nil
+}
+
+func incrementUsageBillingAPIKeyRateLimitSQLite(ctx context.Context, tx *sql.Tx, apiKeyID int64, cost float64) error {
+	var (
+		usage5h, usage1d, usage7d                   float64
+		window5hStart, window1dStart, window7dStart sql.NullTime
+	)
+	err := tx.QueryRowContext(ctx, `
+		SELECT usage_5h, usage_1d, usage_7d, window_5h_start, window_1d_start, window_7d_start
+		FROM api_keys
+		WHERE id = $1 AND deleted_at IS NULL
+	`, apiKeyID).Scan(&usage5h, &usage1d, &usage7d, &window5hStart, &window1dStart, &window7dStart)
+	if errors.Is(err, sql.ErrNoRows) {
+		return service.ErrAPIKeyNotFound
+	}
+	if err != nil {
+		return err
+	}
+
+	now := time.Now().UTC()
+	dayStartUTC := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+
+	next5hUsage, next5hStart := nextUsageWindowValue(window5hStart, usage5h, cost, 5*time.Hour, now, now)
+	next1dUsage, next1dStart := nextUsageWindowValue(window1dStart, usage1d, cost, 24*time.Hour, now, dayStartUTC)
+	next7dUsage, next7dStart := nextUsageWindowValue(window7dStart, usage7d, cost, 7*24*time.Hour, now, dayStartUTC)
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE api_keys
+		SET usage_5h = $1,
+			usage_1d = $2,
+			usage_7d = $3,
+			window_5h_start = $4,
+			window_1d_start = $5,
+			window_7d_start = $6,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE id = $7 AND deleted_at IS NULL
+	`, next5hUsage, next1dUsage, next7dUsage, next5hStart, next1dStart, next7dStart, apiKeyID)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return service.ErrAPIKeyNotFound
+	}
+	return nil
+}
+
+func incrementUsageBillingAccountQuotaSQLite(ctx context.Context, tx *sql.Tx, accountID int64, amount float64) (*service.AccountQuotaState, error) {
+	extra, err := loadAccountExtraForUsageBilling(ctx, tx, accountID)
+	if err != nil {
+		return nil, err
+	}
+
+	nowUTC := time.Now().UTC()
+	account := &service.Account{ID: accountID, Extra: extra}
+
+	extra["quota_used"] = account.GetQuotaUsed() + amount
+
+	if account.GetQuotaDailyLimit() > 0 {
+		if account.IsDailyQuotaPeriodExpired() {
+			extra["quota_daily_used"] = amount
+			extra["quota_daily_start"] = nowUTC.Format(time.RFC3339)
+		} else {
+			extra["quota_daily_used"] = account.GetQuotaDailyUsed() + amount
+		}
+	}
+
+	if account.GetQuotaWeeklyLimit() > 0 {
+		if account.IsWeeklyQuotaPeriodExpired() {
+			extra["quota_weekly_used"] = amount
+			extra["quota_weekly_start"] = nowUTC.Format(time.RFC3339)
+		} else {
+			extra["quota_weekly_used"] = account.GetQuotaWeeklyUsed() + amount
+		}
+	}
+
+	service.ComputeQuotaResetAt(extra)
+
+	payload, err := json.Marshal(extra)
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE accounts
+		SET extra = $1,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE id = $2 AND deleted_at IS NULL
+	`, string(payload), accountID)
+	if err != nil {
+		return nil, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if affected == 0 {
+		return nil, service.ErrAccountNotFound
+	}
+
+	updated := &service.Account{ID: accountID, Extra: extra}
+	state := &service.AccountQuotaState{
+		TotalUsed:   updated.GetQuotaUsed(),
+		TotalLimit:  updated.GetQuotaLimit(),
+		DailyUsed:   updated.GetQuotaDailyUsed(),
+		DailyLimit:  updated.GetQuotaDailyLimit(),
+		WeeklyUsed:  updated.GetQuotaWeeklyUsed(),
+		WeeklyLimit: updated.GetQuotaWeeklyLimit(),
+	}
+
+	if state.TotalLimit > 0 && state.TotalUsed >= state.TotalLimit && (state.TotalUsed-amount) < state.TotalLimit {
+		if err := enqueueSchedulerOutbox(ctx, tx, service.SchedulerOutboxEventAccountChanged, &accountID, nil, nil); err != nil {
+			logger.LegacyPrintf("repository.usage_billing", "[SchedulerOutbox] enqueue quota exceeded failed: account=%d err=%v", accountID, err)
+			return nil, err
+		}
+	}
+	return state, nil
+}
+
+func loadAccountExtraForUsageBilling(ctx context.Context, tx *sql.Tx, accountID int64) (map[string]any, error) {
+	var raw sql.NullString
+	err := tx.QueryRowContext(ctx, `
+		SELECT extra
+		FROM accounts
+		WHERE id = $1 AND deleted_at IS NULL
+	`, accountID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, service.ErrAccountNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !raw.Valid || strings.TrimSpace(raw.String) == "" {
+		return map[string]any{}, nil
+	}
+	var extra map[string]any
+	if err := json.Unmarshal([]byte(raw.String), &extra); err != nil {
+		return nil, fmt.Errorf("decode account extra: %w", err)
+	}
+	if extra == nil {
+		extra = map[string]any{}
+	}
+	return extra, nil
+}
+
+func nextUsageWindowValue(start sql.NullTime, current, amount float64, dur time.Duration, now, resetStart time.Time) (float64, time.Time) {
+	if !start.Valid || start.Time.IsZero() || start.Time.Add(dur).Before(now) || start.Time.Add(dur).Equal(now) {
+		return amount, resetStart
+	}
+	return current + amount, start.Time
 }

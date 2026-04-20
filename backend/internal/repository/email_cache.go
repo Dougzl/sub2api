@@ -50,7 +50,14 @@ func NewEmailCache(rdb *redis.Client) service.EmailCache {
 	return &emailCache{rdb: rdb}
 }
 
+func (c *emailCache) unavailable() bool {
+	return c == nil || c.rdb == nil
+}
+
 func (c *emailCache) GetVerificationCode(ctx context.Context, email string) (*service.VerificationCodeData, error) {
+	if c.unavailable() {
+		return nil, redis.Nil
+	}
 	key := verifyCodeKey(email)
 	val, err := c.rdb.Get(ctx, key).Result()
 	if err != nil {
@@ -64,6 +71,9 @@ func (c *emailCache) GetVerificationCode(ctx context.Context, email string) (*se
 }
 
 func (c *emailCache) SetVerificationCode(ctx context.Context, email string, data *service.VerificationCodeData, ttl time.Duration) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := verifyCodeKey(email)
 	val, err := json.Marshal(data)
 	if err != nil {
@@ -73,6 +83,9 @@ func (c *emailCache) SetVerificationCode(ctx context.Context, email string, data
 }
 
 func (c *emailCache) DeleteVerificationCode(ctx context.Context, email string) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := verifyCodeKey(email)
 	return c.rdb.Del(ctx, key).Err()
 }
@@ -80,6 +93,9 @@ func (c *emailCache) DeleteVerificationCode(ctx context.Context, email string) e
 // Password reset token methods
 
 func (c *emailCache) GetPasswordResetToken(ctx context.Context, email string) (*service.PasswordResetTokenData, error) {
+	if c.unavailable() {
+		return nil, redis.Nil
+	}
 	key := passwordResetKey(email)
 	val, err := c.rdb.Get(ctx, key).Result()
 	if err != nil {
@@ -93,6 +109,9 @@ func (c *emailCache) GetPasswordResetToken(ctx context.Context, email string) (*
 }
 
 func (c *emailCache) SetPasswordResetToken(ctx context.Context, email string, data *service.PasswordResetTokenData, ttl time.Duration) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := passwordResetKey(email)
 	val, err := json.Marshal(data)
 	if err != nil {
@@ -102,6 +121,9 @@ func (c *emailCache) SetPasswordResetToken(ctx context.Context, email string, da
 }
 
 func (c *emailCache) DeletePasswordResetToken(ctx context.Context, email string) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := passwordResetKey(email)
 	return c.rdb.Del(ctx, key).Err()
 }
@@ -109,12 +131,18 @@ func (c *emailCache) DeletePasswordResetToken(ctx context.Context, email string)
 // Password reset email cooldown methods
 
 func (c *emailCache) IsPasswordResetEmailInCooldown(ctx context.Context, email string) bool {
+	if c.unavailable() {
+		return false
+	}
 	key := passwordResetSentAtKey(email)
 	exists, err := c.rdb.Exists(ctx, key).Result()
 	return err == nil && exists > 0
 }
 
 func (c *emailCache) SetPasswordResetEmailCooldown(ctx context.Context, email string, ttl time.Duration) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := passwordResetSentAtKey(email)
 	return c.rdb.Set(ctx, key, "1", ttl).Err()
 }
@@ -122,6 +150,9 @@ func (c *emailCache) SetPasswordResetEmailCooldown(ctx context.Context, email st
 // Notify email verification code methods
 
 func (c *emailCache) GetNotifyVerifyCode(ctx context.Context, email string) (*service.VerificationCodeData, error) {
+	if c.unavailable() {
+		return nil, redis.Nil
+	}
 	key := notifyVerifyKey(email)
 	val, err := c.rdb.Get(ctx, key).Result()
 	if err != nil {
@@ -135,6 +166,9 @@ func (c *emailCache) GetNotifyVerifyCode(ctx context.Context, email string) (*se
 }
 
 func (c *emailCache) SetNotifyVerifyCode(ctx context.Context, email string, data *service.VerificationCodeData, ttl time.Duration) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := notifyVerifyKey(email)
 	val, err := json.Marshal(data)
 	if err != nil {
@@ -144,6 +178,9 @@ func (c *emailCache) SetNotifyVerifyCode(ctx context.Context, email string, data
 }
 
 func (c *emailCache) DeleteNotifyVerifyCode(ctx context.Context, email string) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := notifyVerifyKey(email)
 	return c.rdb.Del(ctx, key).Err()
 }
@@ -155,6 +192,9 @@ func notifyCodeUserRateKey(userID int64) string {
 }
 
 func (c *emailCache) IncrNotifyCodeUserRate(ctx context.Context, userID int64, window time.Duration) (int64, error) {
+	if c.unavailable() {
+		return 0, nil
+	}
 	key := notifyCodeUserRateKey(userID)
 	count, err := c.rdb.Incr(ctx, key).Result()
 	if err != nil {
@@ -168,6 +208,9 @@ func (c *emailCache) IncrNotifyCodeUserRate(ctx context.Context, userID int64, w
 }
 
 func (c *emailCache) GetNotifyCodeUserRate(ctx context.Context, userID int64) (int64, error) {
+	if c.unavailable() {
+		return 0, nil
+	}
 	key := notifyCodeUserRateKey(userID)
 	count, err := c.rdb.Get(ctx, key).Int64()
 	if err != nil {

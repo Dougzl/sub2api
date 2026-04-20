@@ -15,10 +15,17 @@ import (
 // batchLoadAccountStatsPricingRules 批量加载多个渠道的账号统计定价规则（含模型定价）
 func (r *channelRepository) batchLoadAccountStatsPricingRules(ctx context.Context, channelIDs []int64) (map[int64][]service.AccountStatsPricingRule, error) {
 	// 1. 查询规则
+	query := `SELECT id, channel_id, name, group_ids, account_ids, sort_order, created_at, updated_at
+		 FROM channel_account_stats_pricing_rules WHERE channel_id = ANY($1) ORDER BY channel_id, sort_order, id`
+	args := []any{pq.Array(channelIDs)}
+	if isSQLiteStorage() {
+		query = `SELECT id, channel_id, name, group_ids, account_ids, sort_order, created_at, updated_at
+		 FROM channel_account_stats_pricing_rules WHERE channel_id IN (` + sqlitePlaceholders(len(channelIDs)) + `) ORDER BY channel_id, sort_order, id`
+		args = int64Args(channelIDs)
+	}
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, channel_id, name, group_ids, account_ids, sort_order, created_at, updated_at
-		 FROM channel_account_stats_pricing_rules WHERE channel_id = ANY($1) ORDER BY channel_id, sort_order, id`,
-		pq.Array(channelIDs),
+		query,
+		args...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("batch load account stats pricing rules: %w", err)
@@ -65,11 +72,19 @@ func (r *channelRepository) batchLoadAccountStatsModelPricing(ctx context.Contex
 		return make(map[int64][]service.ChannelModelPricing), nil
 	}
 
+	query := `SELECT id, rule_id, platform, models, billing_mode, input_price, output_price,
+	        cache_write_price, cache_read_price, image_output_price, per_request_price, created_at, updated_at
+	 FROM channel_account_stats_model_pricing WHERE rule_id = ANY($1) ORDER BY rule_id, id`
+	args := []any{pq.Array(ruleIDs)}
+	if isSQLiteStorage() {
+		query = `SELECT id, rule_id, platform, models, billing_mode, input_price, output_price,
+	        cache_write_price, cache_read_price, image_output_price, per_request_price, created_at, updated_at
+	 FROM channel_account_stats_model_pricing WHERE rule_id IN (` + sqlitePlaceholders(len(ruleIDs)) + `) ORDER BY rule_id, id`
+		args = int64Args(ruleIDs)
+	}
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, rule_id, platform, models, billing_mode, input_price, output_price,
-		        cache_write_price, cache_read_price, image_output_price, per_request_price, created_at, updated_at
-		 FROM channel_account_stats_model_pricing WHERE rule_id = ANY($1) ORDER BY rule_id, id`,
-		pq.Array(ruleIDs),
+		query,
+		args...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("batch load account stats model pricing: %w", err)
@@ -215,13 +230,23 @@ func (r *channelRepository) batchLoadAccountStatsIntervals(ctx context.Context, 
 	if len(pricingIDs) == 0 {
 		return nil, nil
 	}
+	query := `SELECT id, pricing_id, min_tokens, max_tokens, tier_label,
+	        input_price, output_price, cache_write_price, cache_read_price,
+	        per_request_price, sort_order, created_at, updated_at
+	 FROM channel_account_stats_pricing_intervals
+	 WHERE pricing_id = ANY($1) ORDER BY pricing_id, sort_order, id`
+	args := []any{pq.Array(pricingIDs)}
+	if isSQLiteStorage() {
+		query = `SELECT id, pricing_id, min_tokens, max_tokens, tier_label,
+	        input_price, output_price, cache_write_price, cache_read_price,
+	        per_request_price, sort_order, created_at, updated_at
+	 FROM channel_account_stats_pricing_intervals
+	 WHERE pricing_id IN (` + sqlitePlaceholders(len(pricingIDs)) + `) ORDER BY pricing_id, sort_order, id`
+		args = int64Args(pricingIDs)
+	}
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, pricing_id, min_tokens, max_tokens, tier_label,
-		        input_price, output_price, cache_write_price, cache_read_price,
-		        per_request_price, sort_order, created_at, updated_at
-		 FROM channel_account_stats_pricing_intervals
-		 WHERE pricing_id = ANY($1) ORDER BY pricing_id, sort_order, id`,
-		pq.Array(pricingIDs),
+		query,
+		args...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("batch load account stats pricing intervals: %w", err)

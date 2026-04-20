@@ -1345,13 +1345,23 @@ func buildOpsErrorLogsWhere(filter *service.OpsErrorLogFilter) (string, []any) {
 		clauses = append(clauses, "COALESCE(e.is_business_limited,false) = false")
 	}
 	if len(filter.StatusCodes) > 0 {
-		args = append(args, pq.Array(filter.StatusCodes))
-		clauses = append(clauses, "COALESCE(e.upstream_status_code, e.status_code, 0) = ANY($"+itoa(len(args))+")")
+		if isSQLiteStorage() {
+			clauses = append(clauses, "COALESCE(e.upstream_status_code, e.status_code, 0) IN ("+sqlitePlaceholders(len(filter.StatusCodes))+")")
+			args = append(args, intArgs(filter.StatusCodes)...)
+		} else {
+			args = append(args, pq.Array(filter.StatusCodes))
+			clauses = append(clauses, "COALESCE(e.upstream_status_code, e.status_code, 0) = ANY($"+itoa(len(args))+")")
+		}
 	} else if filter.StatusCodesOther {
 		// "Other" means: status codes not in the common list.
 		known := []int{400, 401, 403, 404, 409, 422, 429, 500, 502, 503, 504, 529}
-		args = append(args, pq.Array(known))
-		clauses = append(clauses, "NOT (COALESCE(e.upstream_status_code, e.status_code, 0) = ANY($"+itoa(len(args))+"))")
+		if isSQLiteStorage() {
+			clauses = append(clauses, "NOT (COALESCE(e.upstream_status_code, e.status_code, 0) IN ("+sqlitePlaceholders(len(known))+"))")
+			args = append(args, intArgs(known)...)
+		} else {
+			args = append(args, pq.Array(known))
+			clauses = append(clauses, "NOT (COALESCE(e.upstream_status_code, e.status_code, 0) = ANY($"+itoa(len(args))+"))")
+		}
 	}
 	// Exact correlation keys (preferred for request↔upstream linkage).
 	if rid := strings.TrimSpace(filter.RequestID); rid != "" {

@@ -35,7 +35,14 @@ func NewIdentityCache(rdb *redis.Client) service.IdentityCache {
 	return &identityCache{rdb: rdb}
 }
 
+func (c *identityCache) unavailable() bool {
+	return c == nil || c.rdb == nil
+}
+
 func (c *identityCache) GetFingerprint(ctx context.Context, accountID int64) (*service.Fingerprint, error) {
+	if c.unavailable() {
+		return nil, redis.Nil
+	}
 	key := fingerprintKey(accountID)
 	val, err := c.rdb.Get(ctx, key).Result()
 	if err != nil {
@@ -49,6 +56,9 @@ func (c *identityCache) GetFingerprint(ctx context.Context, accountID int64) (*s
 }
 
 func (c *identityCache) SetFingerprint(ctx context.Context, accountID int64, fp *service.Fingerprint) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := fingerprintKey(accountID)
 	val, err := json.Marshal(fp)
 	if err != nil {
@@ -58,6 +68,9 @@ func (c *identityCache) SetFingerprint(ctx context.Context, accountID int64, fp 
 }
 
 func (c *identityCache) GetMaskedSessionID(ctx context.Context, accountID int64) (string, error) {
+	if c.unavailable() {
+		return "", nil
+	}
 	key := maskedSessionKey(accountID)
 	val, err := c.rdb.Get(ctx, key).Result()
 	if err != nil {
@@ -70,6 +83,9 @@ func (c *identityCache) GetMaskedSessionID(ctx context.Context, accountID int64)
 }
 
 func (c *identityCache) SetMaskedSessionID(ctx context.Context, accountID int64, sessionID string) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := maskedSessionKey(accountID)
 	return c.rdb.Set(ctx, key, sessionID, maskedSessionTTL).Err()
 }

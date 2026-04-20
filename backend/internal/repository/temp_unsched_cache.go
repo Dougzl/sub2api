@@ -41,8 +41,15 @@ func NewTempUnschedCache(rdb *redis.Client) service.TempUnschedCache {
 	return &tempUnschedCache{rdb: rdb}
 }
 
+func (c *tempUnschedCache) unavailable() bool {
+	return c == nil || c.rdb == nil
+}
+
 // SetTempUnsched 设置临时不可调度状态（只延长不缩短）
 func (c *tempUnschedCache) SetTempUnsched(ctx context.Context, accountID int64, state *service.TempUnschedState) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := fmt.Sprintf("%s%d", tempUnschedPrefix, accountID)
 
 	stateJSON, err := json.Marshal(state)
@@ -66,6 +73,9 @@ func (c *tempUnschedCache) SetTempUnsched(ctx context.Context, accountID int64, 
 
 // GetTempUnsched 获取临时不可调度状态
 func (c *tempUnschedCache) GetTempUnsched(ctx context.Context, accountID int64) (*service.TempUnschedState, error) {
+	if c.unavailable() {
+		return nil, nil
+	}
 	key := fmt.Sprintf("%s%d", tempUnschedPrefix, accountID)
 
 	val, err := c.rdb.Get(ctx, key).Result()
@@ -86,6 +96,9 @@ func (c *tempUnschedCache) GetTempUnsched(ctx context.Context, accountID int64) 
 
 // DeleteTempUnsched 删除临时不可调度状态
 func (c *tempUnschedCache) DeleteTempUnsched(ctx context.Context, accountID int64) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := fmt.Sprintf("%s%d", tempUnschedPrefix, accountID)
 	return c.rdb.Del(ctx, key).Err()
 }

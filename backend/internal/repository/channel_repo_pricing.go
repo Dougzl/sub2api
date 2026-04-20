@@ -90,10 +90,17 @@ func (r *channelRepository) ReplaceModelPricing(ctx context.Context, channelID i
 
 // batchLoadModelPricing 批量加载多个渠道的模型定价（含区间）
 func (r *channelRepository) batchLoadModelPricing(ctx context.Context, channelIDs []int64) (map[int64][]service.ChannelModelPricing, error) {
+	query := `SELECT id, channel_id, platform, models, billing_mode, input_price, output_price, cache_write_price, cache_read_price, image_output_price, per_request_price, created_at, updated_at
+		 FROM channel_model_pricing WHERE channel_id = ANY($1) ORDER BY channel_id, id`
+	args := []any{pq.Array(channelIDs)}
+	if isSQLiteStorage() {
+		query = `SELECT id, channel_id, platform, models, billing_mode, input_price, output_price, cache_write_price, cache_read_price, image_output_price, per_request_price, created_at, updated_at
+		 FROM channel_model_pricing WHERE channel_id IN (` + sqlitePlaceholders(len(channelIDs)) + `) ORDER BY channel_id, id`
+		args = int64Args(channelIDs)
+	}
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, channel_id, platform, models, billing_mode, input_price, output_price, cache_write_price, cache_read_price, image_output_price, per_request_price, created_at, updated_at
-		 FROM channel_model_pricing WHERE channel_id = ANY($1) ORDER BY channel_id, id`,
-		pq.Array(channelIDs),
+		query,
+		args...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("batch load model pricing: %w", err)
@@ -129,13 +136,23 @@ func (r *channelRepository) batchLoadModelPricing(ctx context.Context, channelID
 
 // batchLoadIntervals 批量加载多个定价条目的区间
 func (r *channelRepository) batchLoadIntervals(ctx context.Context, pricingIDs []int64) (map[int64][]service.PricingInterval, error) {
+	query := `SELECT id, pricing_id, min_tokens, max_tokens, tier_label,
+	        input_price, output_price, cache_write_price, cache_read_price,
+	        per_request_price, sort_order, created_at, updated_at
+	 FROM channel_pricing_intervals
+	 WHERE pricing_id = ANY($1) ORDER BY pricing_id, sort_order, id`
+	args := []any{pq.Array(pricingIDs)}
+	if isSQLiteStorage() {
+		query = `SELECT id, pricing_id, min_tokens, max_tokens, tier_label,
+	        input_price, output_price, cache_write_price, cache_read_price,
+	        per_request_price, sort_order, created_at, updated_at
+	 FROM channel_pricing_intervals
+	 WHERE pricing_id IN (` + sqlitePlaceholders(len(pricingIDs)) + `) ORDER BY pricing_id, sort_order, id`
+		args = int64Args(pricingIDs)
+	}
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, pricing_id, min_tokens, max_tokens, tier_label,
-		        input_price, output_price, cache_write_price, cache_read_price,
-		        per_request_price, sort_order, created_at, updated_at
-		 FROM channel_pricing_intervals
-		 WHERE pricing_id = ANY($1) ORDER BY pricing_id, sort_order, id`,
-		pq.Array(pricingIDs),
+		query,
+		args...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("batch load intervals: %w", err)

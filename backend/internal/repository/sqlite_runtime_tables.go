@@ -37,6 +37,29 @@ CREATE TABLE IF NOT EXISTS scheduler_outbox (
 );
 CREATE INDEX IF NOT EXISTS idx_scheduler_outbox_created_at ON scheduler_outbox(created_at);
 
+CREATE TABLE IF NOT EXISTS usage_billing_dedup (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	request_id TEXT NOT NULL,
+	api_key_id INTEGER NOT NULL,
+	request_fingerprint TEXT NOT NULL,
+	created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_billing_dedup_request_api_key
+	ON usage_billing_dedup(request_id, api_key_id);
+CREATE INDEX IF NOT EXISTS idx_usage_billing_dedup_created_at
+	ON usage_billing_dedup(created_at);
+
+CREATE TABLE IF NOT EXISTS usage_billing_dedup_archive (
+	request_id TEXT NOT NULL,
+	api_key_id INTEGER NOT NULL,
+	request_fingerprint TEXT NOT NULL,
+	created_at TIMESTAMP NOT NULL,
+	archived_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	PRIMARY KEY (request_id, api_key_id)
+);
+CREATE INDEX IF NOT EXISTS idx_usage_billing_dedup_archive_created_at
+	ON usage_billing_dedup_archive(created_at);
+
 CREATE TABLE IF NOT EXISTS user_group_rate_multipliers (
 	user_id INTEGER NOT NULL,
 	group_id INTEGER NOT NULL,
@@ -105,6 +128,55 @@ CREATE TABLE IF NOT EXISTS channel_pricing_intervals (
 	updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_channel_pricing_intervals_pricing_id ON channel_pricing_intervals(pricing_id);
+
+CREATE TABLE IF NOT EXISTS channel_account_stats_pricing_rules (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	channel_id INTEGER NOT NULL,
+	name TEXT NOT NULL DEFAULT '',
+	group_ids TEXT NOT NULL DEFAULT '[]',
+	account_ids TEXT NOT NULL DEFAULT '[]',
+	sort_order INTEGER NOT NULL DEFAULT 0,
+	created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_channel_account_stats_pricing_rules_channel_id
+	ON channel_account_stats_pricing_rules(channel_id);
+
+CREATE TABLE IF NOT EXISTS channel_account_stats_model_pricing (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	rule_id INTEGER NOT NULL,
+	platform TEXT NOT NULL DEFAULT 'anthropic',
+	models TEXT NOT NULL DEFAULT '[]',
+	billing_mode TEXT NOT NULL DEFAULT 'token',
+	input_price REAL NULL,
+	output_price REAL NULL,
+	cache_write_price REAL NULL,
+	cache_read_price REAL NULL,
+	image_output_price REAL NULL,
+	per_request_price REAL NULL,
+	created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_channel_account_stats_model_pricing_rule_id
+	ON channel_account_stats_model_pricing(rule_id);
+
+CREATE TABLE IF NOT EXISTS channel_account_stats_pricing_intervals (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	pricing_id INTEGER NOT NULL,
+	min_tokens INTEGER NOT NULL DEFAULT 0,
+	max_tokens INTEGER NULL,
+	tier_label TEXT NULL,
+	input_price REAL NULL,
+	output_price REAL NULL,
+	cache_write_price REAL NULL,
+	cache_read_price REAL NULL,
+	per_request_price REAL NULL,
+	sort_order INTEGER NOT NULL DEFAULT 0,
+	created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_channel_account_stats_pricing_intervals_pricing_id
+	ON channel_account_stats_pricing_intervals(pricing_id);
 
 CREATE TABLE IF NOT EXISTS scheduled_test_plans (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,

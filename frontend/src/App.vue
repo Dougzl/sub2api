@@ -99,6 +99,10 @@ onMounted(async () => {
       router.replace('/setup')
       return
     }
+    if (!status.needs_setup && route.path === '/setup') {
+      router.replace('/home')
+      return
+    }
   } catch {
     // If setup endpoint fails, assume normal mode and continue
   }

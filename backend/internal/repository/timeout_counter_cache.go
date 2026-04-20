@@ -34,9 +34,16 @@ func NewTimeoutCounterCache(rdb *redis.Client) service.TimeoutCounterCache {
 	return &timeoutCounterCache{rdb: rdb}
 }
 
+func (c *timeoutCounterCache) unavailable() bool {
+	return c == nil || c.rdb == nil
+}
+
 // IncrementTimeoutCount 增加账户的超时计数，返回当前计数值
 // windowMinutes 是计数窗口时间（分钟），超过此时间计数器会自动重置
 func (c *timeoutCounterCache) IncrementTimeoutCount(ctx context.Context, accountID int64, windowMinutes int) (int64, error) {
+	if c.unavailable() {
+		return 0, nil
+	}
 	key := fmt.Sprintf("%s%d", timeoutCounterPrefix, accountID)
 
 	ttlSeconds := windowMinutes * 60
@@ -54,6 +61,9 @@ func (c *timeoutCounterCache) IncrementTimeoutCount(ctx context.Context, account
 
 // GetTimeoutCount 获取账户当前的超时计数
 func (c *timeoutCounterCache) GetTimeoutCount(ctx context.Context, accountID int64) (int64, error) {
+	if c.unavailable() {
+		return 0, nil
+	}
 	key := fmt.Sprintf("%s%d", timeoutCounterPrefix, accountID)
 
 	val, err := c.rdb.Get(ctx, key).Int64()
@@ -69,12 +79,18 @@ func (c *timeoutCounterCache) GetTimeoutCount(ctx context.Context, accountID int
 
 // ResetTimeoutCount 重置账户的超时计数
 func (c *timeoutCounterCache) ResetTimeoutCount(ctx context.Context, accountID int64) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := fmt.Sprintf("%s%d", timeoutCounterPrefix, accountID)
 	return c.rdb.Del(ctx, key).Err()
 }
 
 // GetTimeoutCountTTL 获取计数器剩余过期时间
 func (c *timeoutCounterCache) GetTimeoutCountTTL(ctx context.Context, accountID int64) (time.Duration, error) {
+	if c.unavailable() {
+		return 0, nil
+	}
 	key := fmt.Sprintf("%s%d", timeoutCounterPrefix, accountID)
 	return c.rdb.TTL(ctx, key).Result()
 }

@@ -232,7 +232,14 @@ func accountWaitKey(accountID int64) string {
 
 // Account slot operations
 
+func (c *concurrencyCache) unavailable() bool {
+	return c == nil || c.rdb == nil
+}
+
 func (c *concurrencyCache) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
+	if c.unavailable() {
+		return true, nil
+	}
 	key := accountSlotKey(accountID)
 	// 时间戳在 Lua 脚本内使用 Redis TIME 命令获取，确保多实例时钟一致
 	result, err := acquireScript.Run(ctx, c.rdb, []string{key}, maxConcurrency, c.slotTTLSeconds, requestID).Int()
@@ -243,11 +250,17 @@ func (c *concurrencyCache) AcquireAccountSlot(ctx context.Context, accountID int
 }
 
 func (c *concurrencyCache) ReleaseAccountSlot(ctx context.Context, accountID int64, requestID string) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := accountSlotKey(accountID)
 	return c.rdb.ZRem(ctx, key, requestID).Err()
 }
 
 func (c *concurrencyCache) GetAccountConcurrency(ctx context.Context, accountID int64) (int, error) {
+	if c.unavailable() {
+		return 0, nil
+	}
 	key := accountSlotKey(accountID)
 	// 时间戳在 Lua 脚本内使用 Redis TIME 命令获取
 	result, err := getCountScript.Run(ctx, c.rdb, []string{key}, c.slotTTLSeconds).Int()
@@ -260,6 +273,13 @@ func (c *concurrencyCache) GetAccountConcurrency(ctx context.Context, accountID 
 func (c *concurrencyCache) GetAccountConcurrencyBatch(ctx context.Context, accountIDs []int64) (map[int64]int, error) {
 	if len(accountIDs) == 0 {
 		return map[int64]int{}, nil
+	}
+	if c.unavailable() {
+		result := make(map[int64]int, len(accountIDs))
+		for _, id := range accountIDs {
+			result[id] = 0
+		}
+		return result, nil
 	}
 
 	now, err := c.rdb.Time(ctx).Result()
@@ -297,6 +317,9 @@ func (c *concurrencyCache) GetAccountConcurrencyBatch(ctx context.Context, accou
 // User slot operations
 
 func (c *concurrencyCache) AcquireUserSlot(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error) {
+	if c.unavailable() {
+		return true, nil
+	}
 	key := userSlotKey(userID)
 	// 时间戳在 Lua 脚本内使用 Redis TIME 命令获取，确保多实例时钟一致
 	result, err := acquireScript.Run(ctx, c.rdb, []string{key}, maxConcurrency, c.slotTTLSeconds, requestID).Int()
@@ -307,11 +330,17 @@ func (c *concurrencyCache) AcquireUserSlot(ctx context.Context, userID int64, ma
 }
 
 func (c *concurrencyCache) ReleaseUserSlot(ctx context.Context, userID int64, requestID string) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := userSlotKey(userID)
 	return c.rdb.ZRem(ctx, key, requestID).Err()
 }
 
 func (c *concurrencyCache) GetUserConcurrency(ctx context.Context, userID int64) (int, error) {
+	if c.unavailable() {
+		return 0, nil
+	}
 	key := userSlotKey(userID)
 	// 时间戳在 Lua 脚本内使用 Redis TIME 命令获取
 	result, err := getCountScript.Run(ctx, c.rdb, []string{key}, c.slotTTLSeconds).Int()
@@ -324,6 +353,9 @@ func (c *concurrencyCache) GetUserConcurrency(ctx context.Context, userID int64)
 // Wait queue operations
 
 func (c *concurrencyCache) IncrementWaitCount(ctx context.Context, userID int64, maxWait int) (bool, error) {
+	if c.unavailable() {
+		return true, nil
+	}
 	key := waitQueueKey(userID)
 	result, err := incrementWaitScript.Run(ctx, c.rdb, []string{key}, maxWait, c.waitQueueTTLSeconds).Int()
 	if err != nil {
@@ -333,6 +365,9 @@ func (c *concurrencyCache) IncrementWaitCount(ctx context.Context, userID int64,
 }
 
 func (c *concurrencyCache) DecrementWaitCount(ctx context.Context, userID int64) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := waitQueueKey(userID)
 	_, err := decrementWaitScript.Run(ctx, c.rdb, []string{key}).Result()
 	return err
@@ -341,6 +376,9 @@ func (c *concurrencyCache) DecrementWaitCount(ctx context.Context, userID int64)
 // Account wait queue operations
 
 func (c *concurrencyCache) IncrementAccountWaitCount(ctx context.Context, accountID int64, maxWait int) (bool, error) {
+	if c.unavailable() {
+		return true, nil
+	}
 	key := accountWaitKey(accountID)
 	result, err := incrementAccountWaitScript.Run(ctx, c.rdb, []string{key}, maxWait, c.waitQueueTTLSeconds).Int()
 	if err != nil {
@@ -350,12 +388,18 @@ func (c *concurrencyCache) IncrementAccountWaitCount(ctx context.Context, accoun
 }
 
 func (c *concurrencyCache) DecrementAccountWaitCount(ctx context.Context, accountID int64) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := accountWaitKey(accountID)
 	_, err := decrementWaitScript.Run(ctx, c.rdb, []string{key}).Result()
 	return err
 }
 
 func (c *concurrencyCache) GetAccountWaitingCount(ctx context.Context, accountID int64) (int, error) {
+	if c.unavailable() {
+		return 0, nil
+	}
 	key := accountWaitKey(accountID)
 	val, err := c.rdb.Get(ctx, key).Int()
 	if err != nil && !errors.Is(err, redis.Nil) {
@@ -370,6 +414,13 @@ func (c *concurrencyCache) GetAccountWaitingCount(ctx context.Context, accountID
 func (c *concurrencyCache) GetAccountsLoadBatch(ctx context.Context, accounts []service.AccountWithConcurrency) (map[int64]*service.AccountLoadInfo, error) {
 	if len(accounts) == 0 {
 		return map[int64]*service.AccountLoadInfo{}, nil
+	}
+	if c.unavailable() {
+		loadMap := make(map[int64]*service.AccountLoadInfo, len(accounts))
+		for _, acc := range accounts {
+			loadMap[acc.ID] = &service.AccountLoadInfo{AccountID: acc.ID}
+		}
+		return loadMap, nil
 	}
 
 	// 使用 Pipeline 替代 Lua 脚本，兼容 Redis Cluster（Lua 内动态拼 key 会 CROSSSLOT）。
@@ -432,6 +483,13 @@ func (c *concurrencyCache) GetUsersLoadBatch(ctx context.Context, users []servic
 	if len(users) == 0 {
 		return map[int64]*service.UserLoadInfo{}, nil
 	}
+	if c.unavailable() {
+		loadMap := make(map[int64]*service.UserLoadInfo, len(users))
+		for _, u := range users {
+			loadMap[u.ID] = &service.UserLoadInfo{UserID: u.ID}
+		}
+		return loadMap, nil
+	}
 
 	// 使用 Pipeline 替代 Lua 脚本，兼容 Redis Cluster。
 	now, err := c.rdb.Time(ctx).Result()
@@ -489,12 +547,18 @@ func (c *concurrencyCache) GetUsersLoadBatch(ctx context.Context, users []servic
 }
 
 func (c *concurrencyCache) CleanupExpiredAccountSlots(ctx context.Context, accountID int64) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := accountSlotKey(accountID)
 	_, err := cleanupExpiredSlotsScript.Run(ctx, c.rdb, []string{key}, c.slotTTLSeconds).Result()
 	return err
 }
 
 func (c *concurrencyCache) CleanupStaleProcessSlots(ctx context.Context, activeRequestPrefix string) error {
+	if c.unavailable() {
+		return nil
+	}
 	if activeRequestPrefix == "" {
 		return nil
 	}

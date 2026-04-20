@@ -677,6 +677,24 @@ func (r *accountRepository) BatchUpdateLastUsed(ctx context.Context, updates map
 	if len(updates) == 0 {
 		return nil
 	}
+	if isSQLiteStorage() {
+		now := time.Now()
+		lastUsedPayload := make(map[string]int64, len(updates))
+		for id, ts := range updates {
+			if _, err := r.sql.ExecContext(ctx,
+				`UPDATE accounts SET last_used_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`,
+				ts, now, id,
+			); err != nil {
+				return err
+			}
+			lastUsedPayload[strconv.FormatInt(id, 10)] = ts.Unix()
+		}
+		payload := map[string]any{"last_used": lastUsedPayload}
+		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountLastUsed, nil, nil, payload); err != nil {
+			logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue batch last used failed: err=%v", err)
+		}
+		return nil
+	}
 
 	ids := make([]int64, 0, len(updates))
 	args := make([]any, 0, len(updates)*2+1)
@@ -1364,6 +1382,9 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 	if len(ids) == 0 {
 		return 0, nil
 	}
+	if isSQLiteStorage() {
+		return r.bulkUpdateSQLite(ctx, ids, updates)
+	}
 
 	setClauses := make([]string, 0, 8)
 	args := make([]any, 0, 8)
@@ -1472,6 +1493,114 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 		}
 	}
 	return rows, nil
+}
+
+func (r *accountRepository) bulkUpdateSQLite(ctx context.Context, ids []int64, updates service.AccountBulkUpdate) (int64, error) {
+	var affected int64
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		setClauses := make([]string, 0, 10)
+		args := make([]any, 0, 10)
+		if updates.Name != nil {
+			setClauses = append(setClauses, "name = ?")
+			args = append(args, *updates.Name)
+		}
+		if updates.ProxyID != nil {
+			if *updates.ProxyID == 0 {
+				setClauses = append(setClauses, "proxy_id = NULL")
+			} else {
+				setClauses = append(setClauses, "proxy_id = ?")
+				args = append(args, *updates.ProxyID)
+			}
+		}
+		if updates.Concurrency != nil {
+			setClauses = append(setClauses, "concurrency = ?")
+			args = append(args, *updates.Concurrency)
+		}
+		if updates.Priority != nil {
+			setClauses = append(setClauses, "priority = ?")
+			args = append(args, *updates.Priority)
+		}
+		if updates.RateMultiplier != nil {
+			setClauses = append(setClauses, "rate_multiplier = ?")
+			args = append(args, *updates.RateMultiplier)
+		}
+		if updates.LoadFactor != nil {
+			if *updates.LoadFactor <= 0 {
+				setClauses = append(setClauses, "load_factor = NULL")
+			} else {
+				setClauses = append(setClauses, "load_factor = ?")
+				args = append(args, *updates.LoadFactor)
+			}
+		}
+		if updates.Status != nil {
+			setClauses = append(setClauses, "status = ?")
+			args = append(args, *updates.Status)
+		}
+		if updates.Schedulable != nil {
+			setClauses = append(setClauses, "schedulable = ?")
+			args = append(args, *updates.Schedulable)
+		}
+		if len(updates.Credentials) > 0 || len(updates.Extra) > 0 {
+			current, err := r.GetByID(ctx, id)
+			if err != nil {
+				return affected, err
+			}
+			if len(updates.Credentials) > 0 {
+				merged := make(map[string]any, len(current.Credentials)+len(updates.Credentials))
+				for k, v := range current.Credentials {
+					merged[k] = v
+				}
+				for k, v := range updates.Credentials {
+					merged[k] = v
+				}
+				payload, err := json.Marshal(merged)
+				if err != nil {
+					return affected, err
+				}
+				setClauses = append(setClauses, "credentials = ?")
+				args = append(args, payload)
+			}
+			if len(updates.Extra) > 0 {
+				merged := make(map[string]any, len(current.Extra)+len(updates.Extra))
+				for k, v := range current.Extra {
+					merged[k] = v
+				}
+				for k, v := range updates.Extra {
+					merged[k] = v
+				}
+				payload, err := json.Marshal(merged)
+				if err != nil {
+					return affected, err
+				}
+				setClauses = append(setClauses, "extra = ?")
+				args = append(args, payload)
+			}
+		}
+		if len(setClauses) == 0 {
+			continue
+		}
+		setClauses = append(setClauses, "updated_at = ?")
+		args = append(args, time.Now(), id)
+		res, err := r.sql.ExecContext(ctx, "UPDATE accounts SET "+joinClauses(setClauses, ", ")+" WHERE id = ? AND deleted_at IS NULL", args...)
+		if err != nil {
+			return affected, err
+		}
+		rows, err := res.RowsAffected()
+		if err != nil {
+			return affected, err
+		}
+		affected += rows
+	}
+	if affected > 0 {
+		payload := map[string]any{"account_ids": ids}
+		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountBulkChanged, nil, nil, payload); err != nil {
+			logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue bulk update failed: err=%v", err)
+		}
+	}
+	return affected, nil
 }
 
 type accountGroupQueryOptions struct {

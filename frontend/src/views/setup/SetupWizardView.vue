@@ -81,18 +81,31 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { install, type InstallRequest } from '@/api/setup'
+import { getSetupStatus, install, type InstallRequest } from '@/api/setup'
 import Icon from '@/components/icons/Icon.vue'
 
 const { t } = useI18n()
+const router = useRouter()
 
 const errorMessage = ref('')
 const installSuccess = ref(false)
 const installing = ref(false)
 const confirmPassword = ref('')
 const serviceReady = ref(false)
+
+onMounted(async () => {
+  try {
+    const status = await getSetupStatus()
+    if (!status.needs_setup) {
+      router.replace('/home')
+    }
+  } catch {
+    // Keep setup page usable if status check fails during first-run startup.
+  }
+})
 
 const getCurrentPort = (): number => {
   const port = window.location.port

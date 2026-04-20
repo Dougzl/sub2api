@@ -45,6 +45,10 @@ func NewRPMCache(rdb *redis.Client) service.RPMCache {
 	return &RPMCacheImpl{rdb: rdb}
 }
 
+func (c *RPMCacheImpl) unavailable() bool {
+	return c == nil || c.rdb == nil
+}
+
 // currentMinuteKey 获取当前分钟的完整 Redis key
 // 使用 rdb.Time() 获取 Redis 服务端时间，避免多实例时钟偏差
 func (c *RPMCacheImpl) currentMinuteKey(ctx context.Context, accountID int64) (string, error) {
@@ -70,6 +74,9 @@ func (c *RPMCacheImpl) currentMinuteSuffix(ctx context.Context) (string, error) 
 // IncrementRPM 原子递增并返回当前分钟的计数
 // 使用 TxPipeline (MULTI/EXEC) 执行 INCR + EXPIRE，保证原子性且兼容 Redis Cluster
 func (c *RPMCacheImpl) IncrementRPM(ctx context.Context, accountID int64) (int, error) {
+	if c.unavailable() {
+		return 0, nil
+	}
 	key, err := c.currentMinuteKey(ctx, accountID)
 	if err != nil {
 		return 0, fmt.Errorf("rpm increment: %w", err)
@@ -90,6 +97,9 @@ func (c *RPMCacheImpl) IncrementRPM(ctx context.Context, accountID int64) (int, 
 
 // GetRPM 获取当前分钟的 RPM 计数
 func (c *RPMCacheImpl) GetRPM(ctx context.Context, accountID int64) (int, error) {
+	if c.unavailable() {
+		return 0, nil
+	}
 	key, err := c.currentMinuteKey(ctx, accountID)
 	if err != nil {
 		return 0, fmt.Errorf("rpm get: %w", err)
@@ -109,6 +119,13 @@ func (c *RPMCacheImpl) GetRPM(ctx context.Context, accountID int64) (int, error)
 func (c *RPMCacheImpl) GetRPMBatch(ctx context.Context, accountIDs []int64) (map[int64]int, error) {
 	if len(accountIDs) == 0 {
 		return map[int64]int{}, nil
+	}
+	if c.unavailable() {
+		result := make(map[int64]int, len(accountIDs))
+		for _, id := range accountIDs {
+			result[id] = 0
+		}
+		return result, nil
 	}
 
 	// 获取当前分钟后缀

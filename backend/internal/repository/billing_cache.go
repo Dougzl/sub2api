@@ -142,7 +142,14 @@ func NewBillingCache(rdb *redis.Client) service.BillingCache {
 	return &billingCache{rdb: rdb}
 }
 
+func (c *billingCache) unavailable() bool {
+	return c == nil || c.rdb == nil
+}
+
 func (c *billingCache) GetUserBalance(ctx context.Context, userID int64) (float64, error) {
+	if c.unavailable() {
+		return 0, redis.Nil
+	}
 	key := billingBalanceKey(userID)
 	val, err := c.rdb.Get(ctx, key).Result()
 	if err != nil {
@@ -152,11 +159,17 @@ func (c *billingCache) GetUserBalance(ctx context.Context, userID int64) (float6
 }
 
 func (c *billingCache) SetUserBalance(ctx context.Context, userID int64, balance float64) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := billingBalanceKey(userID)
 	return c.rdb.Set(ctx, key, balance, jitteredTTL()).Err()
 }
 
 func (c *billingCache) DeductUserBalance(ctx context.Context, userID int64, amount float64) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := billingBalanceKey(userID)
 	_, err := deductBalanceScript.Run(ctx, c.rdb, []string{key}, amount, int(jitteredTTL().Seconds())).Result()
 	if err != nil && !errors.Is(err, redis.Nil) {
@@ -167,11 +180,17 @@ func (c *billingCache) DeductUserBalance(ctx context.Context, userID int64, amou
 }
 
 func (c *billingCache) InvalidateUserBalance(ctx context.Context, userID int64) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := billingBalanceKey(userID)
 	return c.rdb.Del(ctx, key).Err()
 }
 
 func (c *billingCache) GetSubscriptionCache(ctx context.Context, userID, groupID int64) (*service.SubscriptionCacheData, error) {
+	if c.unavailable() {
+		return nil, redis.Nil
+	}
 	key := billingSubKey(userID, groupID)
 	result, err := c.rdb.HGetAll(ctx, key).Result()
 	if err != nil {
@@ -218,6 +237,9 @@ func (c *billingCache) parseSubscriptionCache(data map[string]string) (*service.
 }
 
 func (c *billingCache) SetSubscriptionCache(ctx context.Context, userID, groupID int64, data *service.SubscriptionCacheData) error {
+	if c.unavailable() {
+		return nil
+	}
 	if data == nil {
 		return nil
 	}
@@ -241,6 +263,9 @@ func (c *billingCache) SetSubscriptionCache(ctx context.Context, userID, groupID
 }
 
 func (c *billingCache) UpdateSubscriptionUsage(ctx context.Context, userID, groupID int64, cost float64) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := billingSubKey(userID, groupID)
 	_, err := updateSubUsageScript.Run(ctx, c.rdb, []string{key}, cost, int(jitteredTTL().Seconds())).Result()
 	if err != nil && !errors.Is(err, redis.Nil) {
@@ -251,11 +276,17 @@ func (c *billingCache) UpdateSubscriptionUsage(ctx context.Context, userID, grou
 }
 
 func (c *billingCache) InvalidateSubscriptionCache(ctx context.Context, userID, groupID int64) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := billingSubKey(userID, groupID)
 	return c.rdb.Del(ctx, key).Err()
 }
 
 func (c *billingCache) GetAPIKeyRateLimit(ctx context.Context, keyID int64) (*service.APIKeyRateLimitCacheData, error) {
+	if c.unavailable() {
+		return nil, redis.Nil
+	}
 	key := billingRateLimitKey(keyID)
 	result, err := c.rdb.HGetAll(ctx, key).Result()
 	if err != nil {
@@ -287,6 +318,9 @@ func (c *billingCache) GetAPIKeyRateLimit(ctx context.Context, keyID int64) (*se
 }
 
 func (c *billingCache) SetAPIKeyRateLimit(ctx context.Context, keyID int64, data *service.APIKeyRateLimitCacheData) error {
+	if c.unavailable() {
+		return nil
+	}
 	if data == nil {
 		return nil
 	}
@@ -307,6 +341,9 @@ func (c *billingCache) SetAPIKeyRateLimit(ctx context.Context, keyID int64, data
 }
 
 func (c *billingCache) UpdateAPIKeyRateLimitUsage(ctx context.Context, keyID int64, cost float64) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := billingRateLimitKey(keyID)
 	now := time.Now().Unix()
 	_, err := updateRateLimitUsageScript.Run(ctx, c.rdb, []string{key},
@@ -325,6 +362,9 @@ func (c *billingCache) UpdateAPIKeyRateLimitUsage(ctx context.Context, keyID int
 }
 
 func (c *billingCache) InvalidateAPIKeyRateLimit(ctx context.Context, keyID int64) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := billingRateLimitKey(keyID)
 	return c.rdb.Del(ctx, key).Err()
 }

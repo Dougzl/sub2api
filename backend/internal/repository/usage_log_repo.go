@@ -1405,7 +1405,7 @@ func (r *usageLogRepository) GetUserStats(ctx context.Context, userID int64, sta
 type DashboardStats = usagestats.DashboardStats
 
 func (r *usageLogRepository) GetDashboardStats(ctx context.Context) (*DashboardStats, error) {
-	if isH2Storage() {
+	if isSQLiteStorage() {
 		stats := &DashboardStats{}
 		now := timezone.Now()
 		todayStart := timezone.Today()
@@ -1441,7 +1441,7 @@ func (r *usageLogRepository) GetDashboardStats(ctx context.Context) (*DashboardS
 }
 
 func (r *usageLogRepository) GetDashboardStatsWithRange(ctx context.Context, start, end time.Time) (*DashboardStats, error) {
-	if isH2Storage() {
+	if isSQLiteStorage() {
 		stats := &DashboardStats{}
 		now := timezone.Now()
 		todayStart := timezone.Today()
@@ -2241,7 +2241,7 @@ func (r *usageLogRepository) GetAPIKeyUsageTrend(ctx context.Context, startTime,
 
 // GetUserUsageTrend returns usage trend data grouped by user and date
 func (r *usageLogRepository) GetUserUsageTrend(ctx context.Context, startTime, endTime time.Time, granularity string, limit int) (results []UserUsageTrendPoint, err error) {
-	if isH2Storage() {
+	if isSQLiteStorage() {
 		return []UserUsageTrendPoint{}, nil
 	}
 	dateFormat := safeDateFormat(granularity)
@@ -2584,7 +2584,7 @@ func (r *usageLogRepository) GetAPIKeyDashboardStats(ctx context.Context, apiKey
 
 // GetUserUsageTrendByUserID 获取指定用户的使用趋势
 func (r *usageLogRepository) GetUserUsageTrendByUserID(ctx context.Context, userID int64, startTime, endTime time.Time, granularity string) (results []TrendDataPoint, err error) {
-	if isH2Storage() {
+	if isSQLiteStorage() {
 		return []TrendDataPoint{}, nil
 	}
 	dateFormat := safeDateFormat(granularity)
@@ -2784,6 +2784,20 @@ func (r *usageLogRepository) GetBatchUserUsageStats(ctx context.Context, userIDs
 		result[id] = &BatchUserUsageStats{UserID: id}
 	}
 
+	if isSQLiteStorage() {
+		stats, err := r.getBatchActualCostStatsSQLite(ctx, "user_id", normalizedUserIDs, startTime, endTime)
+		if err != nil {
+			return nil, err
+		}
+		for id, totals := range stats {
+			if item, ok := result[id]; ok {
+				item.TotalActualCost = totals.total
+				item.TodayActualCost = totals.today
+			}
+		}
+		return result, nil
+	}
+
 	query := `
 		SELECT
 			user_id,
@@ -2846,6 +2860,20 @@ func (r *usageLogRepository) GetBatchAPIKeyUsageStats(ctx context.Context, apiKe
 		result[id] = &BatchAPIKeyUsageStats{APIKeyID: id}
 	}
 
+	if isSQLiteStorage() {
+		stats, err := r.getBatchActualCostStatsSQLite(ctx, "api_key_id", normalizedAPIKeyIDs, startTime, endTime)
+		if err != nil {
+			return nil, err
+		}
+		for id, totals := range stats {
+			if item, ok := result[id]; ok {
+				item.TotalActualCost = totals.total
+				item.TodayActualCost = totals.today
+			}
+		}
+		return result, nil
+	}
+
 	query := `
 		SELECT
 			api_key_id,
@@ -2884,9 +2912,69 @@ func (r *usageLogRepository) GetBatchAPIKeyUsageStats(ctx context.Context, apiKe
 	return result, nil
 }
 
+type batchActualCostTotals struct {
+	total float64
+	today float64
+}
+
+func (r *usageLogRepository) getBatchActualCostStatsSQLite(ctx context.Context, idColumn string, ids []int64, startTime, endTime time.Time) (map[int64]batchActualCostTotals, error) {
+	result := make(map[int64]batchActualCostTotals, len(ids))
+	if len(ids) == 0 {
+		return result, nil
+	}
+	switch idColumn {
+	case "user_id", "api_key_id":
+	default:
+		return nil, fmt.Errorf("unsupported usage batch id column: %s", idColumn)
+	}
+	today := timezone.Today()
+	lowerBound := startTime
+	if today.Before(lowerBound) {
+		lowerBound = today
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, 0, len(ids)+4)
+	args = append(args, startTime, endTime, today)
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	args = append(args, lowerBound)
+	query := fmt.Sprintf(`
+		SELECT
+			%s,
+			COALESCE(SUM(CASE WHEN created_at >= ? AND created_at < ? THEN actual_cost ELSE 0 END), 0) AS total_cost,
+			COALESCE(SUM(CASE WHEN created_at >= ? THEN actual_cost ELSE 0 END), 0) AS today_cost
+		FROM usage_logs
+		WHERE %s IN (%s)
+		  AND created_at >= ?
+		GROUP BY %s
+	`, idColumn, idColumn, strings.Join(placeholders, ","), idColumn)
+	rows, err := r.sql.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+	for rows.Next() {
+		var id int64
+		var total float64
+		var todayTotal float64
+		if err := rows.Scan(&id, &total, &todayTotal); err != nil {
+			return nil, err
+		}
+		result[id] = batchActualCostTotals{total: total, today: todayTotal}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // GetUsageTrendWithFilters returns usage trend data with optional filters
 func (r *usageLogRepository) GetUsageTrendWithFilters(ctx context.Context, startTime, endTime time.Time, granularity string, userID, apiKeyID, accountID, groupID int64, model string, requestType *int16, stream *bool, billingType *int8) (results []TrendDataPoint, err error) {
-	if isH2Storage() {
+	if isSQLiteStorage() {
 		return []TrendDataPoint{}, nil
 	}
 	if shouldUsePreaggregatedTrend(granularity, userID, apiKeyID, accountID, groupID, model, requestType, stream, billingType) {
@@ -3034,7 +3122,7 @@ func (r *usageLogRepository) getUsageTrendFromAggregates(ctx context.Context, st
 
 // GetModelStatsWithFilters returns model statistics with optional filters
 func (r *usageLogRepository) GetModelStatsWithFilters(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, accountID, groupID int64, requestType *int16, stream *bool, billingType *int8) (results []ModelStat, err error) {
-	if isH2Storage() {
+	if isSQLiteStorage() {
 		return []ModelStat{}, nil
 	}
 	return r.getModelStatsWithFiltersBySource(ctx, startTime, endTime, userID, apiKeyID, accountID, groupID, requestType, stream, billingType, usagestats.ModelSourceRequested)
@@ -3043,7 +3131,7 @@ func (r *usageLogRepository) GetModelStatsWithFilters(ctx context.Context, start
 // GetModelStatsWithFiltersBySource returns model statistics with optional filters and model source dimension.
 // source: requested | upstream | mapping.
 func (r *usageLogRepository) GetModelStatsWithFiltersBySource(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, accountID, groupID int64, requestType *int16, stream *bool, billingType *int8, source string) (results []ModelStat, err error) {
-	if isH2Storage() {
+	if isSQLiteStorage() {
 		return []ModelStat{}, nil
 	}
 	return r.getModelStatsWithFiltersBySource(ctx, startTime, endTime, userID, apiKeyID, accountID, groupID, requestType, stream, billingType, source)
@@ -3120,7 +3208,7 @@ func (r *usageLogRepository) getModelStatsWithFiltersBySource(ctx context.Contex
 
 // GetGroupStatsWithFilters returns group usage statistics with optional filters
 func (r *usageLogRepository) GetGroupStatsWithFilters(ctx context.Context, startTime, endTime time.Time, userID, apiKeyID, accountID, groupID int64, requestType *int16, stream *bool, billingType *int8) (results []usagestats.GroupStat, err error) {
-	if isH2Storage() {
+	if isSQLiteStorage() {
 		return []usagestats.GroupStat{}, nil
 	}
 	query := `

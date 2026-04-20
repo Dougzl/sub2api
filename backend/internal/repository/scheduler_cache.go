@@ -50,7 +50,14 @@ func newSchedulerCacheWithChunkSizes(rdb *redis.Client, mgetChunkSize, writeChun
 	}
 }
 
+func (c *schedulerCache) unavailable() bool {
+	return c == nil || c.rdb == nil
+}
+
 func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.SchedulerBucket) ([]*service.Account, bool, error) {
+	if c.unavailable() {
+		return nil, false, nil
+	}
 	readyKey := schedulerBucketKey(schedulerReadyPrefix, bucket)
 	readyVal, err := c.rdb.Get(ctx, readyKey).Result()
 	if err == redis.Nil {
@@ -108,6 +115,9 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
 }
 
 func (c *schedulerCache) SetSnapshot(ctx context.Context, bucket service.SchedulerBucket, accounts []service.Account) error {
+	if c.unavailable() {
+		return nil
+	}
 	activeKey := schedulerBucketKey(schedulerActivePrefix, bucket)
 	oldActive, _ := c.rdb.Get(ctx, activeKey).Result()
 
@@ -159,6 +169,9 @@ func (c *schedulerCache) SetSnapshot(ctx context.Context, bucket service.Schedul
 }
 
 func (c *schedulerCache) GetAccount(ctx context.Context, accountID int64) (*service.Account, error) {
+	if c.unavailable() {
+		return nil, nil
+	}
 	key := schedulerAccountKey(strconv.FormatInt(accountID, 10))
 	val, err := c.rdb.Get(ctx, key).Result()
 	if err == redis.Nil {
@@ -171,6 +184,9 @@ func (c *schedulerCache) GetAccount(ctx context.Context, accountID int64) (*serv
 }
 
 func (c *schedulerCache) SetAccount(ctx context.Context, account *service.Account) error {
+	if c.unavailable() {
+		return nil
+	}
 	if account == nil || account.ID <= 0 {
 		return nil
 	}
@@ -178,6 +194,9 @@ func (c *schedulerCache) SetAccount(ctx context.Context, account *service.Accoun
 }
 
 func (c *schedulerCache) DeleteAccount(ctx context.Context, accountID int64) error {
+	if c.unavailable() {
+		return nil
+	}
 	if accountID <= 0 {
 		return nil
 	}
@@ -186,6 +205,9 @@ func (c *schedulerCache) DeleteAccount(ctx context.Context, accountID int64) err
 }
 
 func (c *schedulerCache) UpdateLastUsed(ctx context.Context, updates map[int64]time.Time) error {
+	if c.unavailable() {
+		return nil
+	}
 	if len(updates) == 0 {
 		return nil
 	}
@@ -228,11 +250,17 @@ func (c *schedulerCache) UpdateLastUsed(ctx context.Context, updates map[int64]t
 }
 
 func (c *schedulerCache) TryLockBucket(ctx context.Context, bucket service.SchedulerBucket, ttl time.Duration) (bool, error) {
+	if c.unavailable() {
+		return false, nil
+	}
 	key := schedulerBucketKey(schedulerLockPrefix, bucket)
 	return c.rdb.SetNX(ctx, key, time.Now().UnixNano(), ttl).Result()
 }
 
 func (c *schedulerCache) ListBuckets(ctx context.Context) ([]service.SchedulerBucket, error) {
+	if c.unavailable() {
+		return nil, nil
+	}
 	raw, err := c.rdb.SMembers(ctx, schedulerBucketSetKey).Result()
 	if err != nil {
 		return nil, err
@@ -249,6 +277,9 @@ func (c *schedulerCache) ListBuckets(ctx context.Context) ([]service.SchedulerBu
 }
 
 func (c *schedulerCache) GetOutboxWatermark(ctx context.Context) (int64, error) {
+	if c.unavailable() {
+		return 0, nil
+	}
 	val, err := c.rdb.Get(ctx, schedulerOutboxWatermarkKey).Result()
 	if err == redis.Nil {
 		return 0, nil
@@ -264,6 +295,9 @@ func (c *schedulerCache) GetOutboxWatermark(ctx context.Context) (int64, error) 
 }
 
 func (c *schedulerCache) SetOutboxWatermark(ctx context.Context, id int64) error {
+	if c.unavailable() {
+		return nil
+	}
 	return c.rdb.Set(ctx, schedulerOutboxWatermarkKey, strconv.FormatInt(id, 10), 0).Err()
 }
 

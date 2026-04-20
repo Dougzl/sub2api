@@ -133,7 +133,7 @@ func TestAdminAPIKeyHandler_UpdateGroup_ServiceError(t *testing.T) {
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 
-// H2: empty body → group_id is nil → no-op, returns original key
+// SQLite: empty body → group_id is nil → no-op, returns original key
 func TestAdminAPIKeyHandler_UpdateGroup_EmptyBody_NoChange(t *testing.T) {
 	router := setupAPIKeyHandler(newStubAdminService())
 

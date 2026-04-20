@@ -96,6 +96,13 @@ func enqueueSchedulerOutbox(ctx context.Context, exec sqlExecutor, eventType str
 		VALUES ($1, $2, $3, $4)
 	`
 	args := []any{eventType, accountID, groupID, payloadArg}
+	if isSQLiteStorage() {
+		// SQLite MVP: avoid PostgreSQL-only dedup SQL
+		// (IS NOT DISTINCT FROM, NOW(), make_interval). Duplicate outbox events
+		// are cheaper than failing the write path or polluting logs with errors.
+		_, err := exec.ExecContext(ctx, query, args...)
+		return err
+	}
 	if schedulerOutboxEventSupportsDedup(eventType) {
 		query = `
 			INSERT INTO scheduler_outbox (event_type, account_id, group_id, payload)

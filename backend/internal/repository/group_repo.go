@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/apikey"
@@ -461,6 +462,28 @@ func (r *groupRepository) ExistsByIDs(ctx context.Context, ids []int64) (map[int
 		return result, nil
 	}
 
+	if isSQLiteStorage() {
+		rows, err := r.sql.QueryContext(ctx,
+			`SELECT id FROM groups WHERE deleted_at IS NULL AND id IN (`+sqlitePlaceholders(len(uniqueIDs))+`)`,
+			int64Args(uniqueIDs)...,
+		)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				return nil, err
+			}
+			result[id] = true
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return result, nil
+	}
+
 	rows, err := r.sql.QueryContext(ctx, `
 		SELECT id
 		FROM groups
@@ -635,6 +658,41 @@ func (r *groupRepository) loadAccountCounts(ctx context.Context, groupIDs []int6
 		return counts, nil
 	}
 
+	if isSQLiteStorage() {
+		rows, err := r.sql.QueryContext(
+			ctx,
+			`SELECT ag.group_id,
+				COUNT(*) AS total,
+				COALESCE(SUM(CASE WHEN a.status = 'active' AND a.schedulable = true THEN 1 ELSE 0 END), 0) AS active,
+				COALESCE(SUM(CASE WHEN a.status = 'active' AND (
+					a.rate_limit_reset_at > CURRENT_TIMESTAMP OR
+					a.overload_until > CURRENT_TIMESTAMP OR
+					a.temp_unschedulable_until > CURRENT_TIMESTAMP
+				) THEN 1 ELSE 0 END), 0) AS rate_limited
+			FROM account_groups ag
+			JOIN accounts a ON a.id = ag.account_id
+			WHERE ag.group_id IN (`+sqlitePlaceholders(len(groupIDs))+`)
+			GROUP BY ag.group_id`,
+			int64Args(groupIDs)...,
+		)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var groupID int64
+			var c groupAccountCounts
+			if err = rows.Scan(&groupID, &c.Total, &c.Active, &c.RateLimited); err != nil {
+				return nil, err
+			}
+			counts[groupID] = c
+		}
+		if err = rows.Err(); err != nil {
+			return nil, err
+		}
+		return counts, nil
+	}
+
 	rows, err := r.sql.QueryContext(
 		ctx,
 		`SELECT ag.group_id,
@@ -682,6 +740,30 @@ func (r *groupRepository) GetAccountIDsByGroupIDs(ctx context.Context, groupIDs 
 		return nil, nil
 	}
 
+	if isSQLiteStorage() {
+		rows, err := r.sql.QueryContext(
+			ctx,
+			"SELECT DISTINCT account_id FROM account_groups WHERE group_id IN ("+sqlitePlaceholders(len(groupIDs))+") ORDER BY account_id",
+			int64Args(groupIDs)...,
+		)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = rows.Close() }()
+		var accountIDs []int64
+		for rows.Next() {
+			var accountID int64
+			if err := rows.Scan(&accountID); err != nil {
+				return nil, err
+			}
+			accountIDs = append(accountIDs, accountID)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return accountIDs, nil
+	}
+
 	rows, err := r.sql.QueryContext(
 		ctx,
 		"SELECT DISTINCT account_id FROM account_groups WHERE group_id = ANY($1) ORDER BY account_id",
@@ -710,6 +792,26 @@ func (r *groupRepository) GetAccountIDsByGroupIDs(ctx context.Context, groupIDs 
 // BindAccountsToGroup 将多个账号绑定到指定分组（批量插入，忽略已存在的绑定）
 func (r *groupRepository) BindAccountsToGroup(ctx context.Context, groupID int64, accountIDs []int64) error {
 	if len(accountIDs) == 0 {
+		return nil
+	}
+
+	if isSQLiteStorage() {
+		now := time.Now()
+		for _, accountID := range accountIDs {
+			if accountID <= 0 {
+				continue
+			}
+			if _, err := r.sql.ExecContext(ctx,
+				`INSERT OR IGNORE INTO account_groups (account_id, group_id, priority, created_at)
+				 VALUES (?, ?, 50, ?)`,
+				accountID, groupID, now,
+			); err != nil {
+				return err
+			}
+		}
+		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventGroupChanged, nil, &groupID, nil); err != nil {
+			logger.LegacyPrintf("repository.group", "[SchedulerOutbox] enqueue bind accounts to group failed: group=%d err=%v", groupID, err)
+		}
 		return nil
 	}
 
@@ -753,6 +855,34 @@ func (r *groupRepository) UpdateSortOrders(ctx context.Context, updates []servic
 		sortOrderByID[u.ID] = u.SortOrder
 	}
 	if len(groupIDs) == 0 {
+		return nil
+	}
+
+	if isSQLiteStorage() {
+		var existingCount int
+		if err := scanSingleRow(
+			ctx,
+			r.sql,
+			`SELECT COUNT(*) FROM groups WHERE deleted_at IS NULL AND id IN (`+sqlitePlaceholders(len(groupIDs))+`)`,
+			int64Args(groupIDs),
+			&existingCount,
+		); err != nil {
+			return err
+		}
+		if existingCount != len(groupIDs) {
+			return service.ErrGroupNotFound
+		}
+		for _, id := range groupIDs {
+			if _, err := r.sql.ExecContext(ctx,
+				`UPDATE groups SET sort_order = ?, updated_at = ? WHERE deleted_at IS NULL AND id = ?`,
+				sortOrderByID[id], time.Now(), id,
+			); err != nil {
+				return err
+			}
+			if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventGroupChanged, nil, &id, nil); err != nil {
+				logger.LegacyPrintf("repository.group", "[SchedulerOutbox] enqueue group sort update failed: group=%d err=%v", id, err)
+			}
+		}
 		return nil
 	}
 

@@ -40,7 +40,14 @@ func NewRefreshTokenCache(rdb *redis.Client) service.RefreshTokenCache {
 	return &refreshTokenCache{rdb: rdb}
 }
 
+func (c *refreshTokenCache) unavailable() bool {
+	return c == nil || c.rdb == nil
+}
+
 func (c *refreshTokenCache) StoreRefreshToken(ctx context.Context, tokenHash string, data *service.RefreshTokenData, ttl time.Duration) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := refreshTokenKey(tokenHash)
 	val, err := json.Marshal(data)
 	if err != nil {
@@ -50,6 +57,9 @@ func (c *refreshTokenCache) StoreRefreshToken(ctx context.Context, tokenHash str
 }
 
 func (c *refreshTokenCache) GetRefreshToken(ctx context.Context, tokenHash string) (*service.RefreshTokenData, error) {
+	if c.unavailable() {
+		return nil, service.ErrRefreshTokenNotFound
+	}
 	key := refreshTokenKey(tokenHash)
 	val, err := c.rdb.Get(ctx, key).Result()
 	if err != nil {
@@ -66,11 +76,17 @@ func (c *refreshTokenCache) GetRefreshToken(ctx context.Context, tokenHash strin
 }
 
 func (c *refreshTokenCache) DeleteRefreshToken(ctx context.Context, tokenHash string) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := refreshTokenKey(tokenHash)
 	return c.rdb.Del(ctx, key).Err()
 }
 
 func (c *refreshTokenCache) DeleteUserRefreshTokens(ctx context.Context, userID int64) error {
+	if c.unavailable() {
+		return nil
+	}
 	// Get all token hashes for this user
 	tokenHashes, err := c.GetUserTokenHashes(ctx, userID)
 	if err != nil && err != redis.Nil {
@@ -98,6 +114,9 @@ func (c *refreshTokenCache) DeleteUserRefreshTokens(ctx context.Context, userID 
 }
 
 func (c *refreshTokenCache) DeleteTokenFamily(ctx context.Context, familyID string) error {
+	if c.unavailable() {
+		return nil
+	}
 	// Get all token hashes in this family
 	tokenHashes, err := c.GetFamilyTokenHashes(ctx, familyID)
 	if err != nil && err != redis.Nil {
@@ -125,6 +144,9 @@ func (c *refreshTokenCache) DeleteTokenFamily(ctx context.Context, familyID stri
 }
 
 func (c *refreshTokenCache) AddToUserTokenSet(ctx context.Context, userID int64, tokenHash string, ttl time.Duration) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := userRefreshTokensKey(userID)
 	pipe := c.rdb.Pipeline()
 	pipe.SAdd(ctx, key, tokenHash)
@@ -134,6 +156,9 @@ func (c *refreshTokenCache) AddToUserTokenSet(ctx context.Context, userID int64,
 }
 
 func (c *refreshTokenCache) AddToFamilyTokenSet(ctx context.Context, familyID string, tokenHash string, ttl time.Duration) error {
+	if c.unavailable() {
+		return nil
+	}
 	key := tokenFamilyKey(familyID)
 	pipe := c.rdb.Pipeline()
 	pipe.SAdd(ctx, key, tokenHash)
@@ -143,16 +168,25 @@ func (c *refreshTokenCache) AddToFamilyTokenSet(ctx context.Context, familyID st
 }
 
 func (c *refreshTokenCache) GetUserTokenHashes(ctx context.Context, userID int64) ([]string, error) {
+	if c.unavailable() {
+		return nil, nil
+	}
 	key := userRefreshTokensKey(userID)
 	return c.rdb.SMembers(ctx, key).Result()
 }
 
 func (c *refreshTokenCache) GetFamilyTokenHashes(ctx context.Context, familyID string) ([]string, error) {
+	if c.unavailable() {
+		return nil, nil
+	}
 	key := tokenFamilyKey(familyID)
 	return c.rdb.SMembers(ctx, key).Result()
 }
 
 func (c *refreshTokenCache) IsTokenInFamily(ctx context.Context, familyID string, tokenHash string) (bool, error) {
+	if c.unavailable() {
+		return false, nil
+	}
 	key := tokenFamilyKey(familyID)
 	return c.rdb.SIsMember(ctx, key, tokenHash).Result()
 }
