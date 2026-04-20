@@ -8,9 +8,11 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/appdata"
 	"github.com/spf13/viper"
 )
 
@@ -715,7 +717,7 @@ type DatabaseConfig struct {
 func (d *DatabaseConfig) DSN() string {
 	if strings.EqualFold(strings.TrimSpace(d.Engine), "sqlite") {
 		if strings.TrimSpace(d.DBName) == "" {
-			return "./data/sub2api.db"
+			return appdata.DefaultSQLiteDBPath()
 		}
 		return d.DBName
 	}
@@ -963,22 +965,16 @@ func LoadForBootstrap() (*Config, error) {
 }
 
 func load(allowMissingJWTSecret bool) (*Config, error) {
-	viper.SetConfigName("config")
-	viper.SetConfigType("yaml")
-
-	// Add config paths in priority order
-	// 1. DATA_DIR environment variable (highest priority)
-	if dataDir := os.Getenv("DATA_DIR"); dataDir != "" {
-		viper.AddConfigPath(dataDir)
+	configFile := findConfigFile(configSearchPaths())
+	if configFile != "" {
+		viper.SetConfigFile(configFile)
+	} else {
+		viper.SetConfigName("config")
+		viper.SetConfigType("yaml")
+		for _, path := range configSearchPaths() {
+			viper.AddConfigPath(path)
+		}
 	}
-	// 2. Docker data directory
-	viper.AddConfigPath("/app/data")
-	// 3. Current directory
-	viper.AddConfigPath(".")
-	// 4. Config subdirectory
-	viper.AddConfigPath("./config")
-	// 5. System config directory
-	viper.AddConfigPath("/etc/sub2api")
 
 	// 环境变量支持
 	viper.AutomaticEnv()
@@ -1004,6 +1000,11 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	if cfg.Database.Engine == "" {
 		cfg.Database.Engine = "sqlite"
 	}
+	configFileUsed := ConfigFileUsed()
+	if strings.EqualFold(cfg.Database.Engine, "sqlite") {
+		cfg.Database.DBName = appdata.ResolvePathWithConfigBase(configFileUsed, cfg.Database.DBName)
+	}
+	cfg.Pricing.DataDir = appdata.ResolvePathWithConfigBase(configFileUsed, cfg.Pricing.DataDir)
 	cfg.Server.Mode = strings.ToLower(strings.TrimSpace(cfg.Server.Mode))
 	if cfg.Server.Mode == "" {
 		cfg.Server.Mode = "debug"
@@ -1247,7 +1248,7 @@ func setDefaults() {
 	viper.SetDefault("database.port", 0)
 	viper.SetDefault("database.user", "")
 	viper.SetDefault("database.password", "")
-	viper.SetDefault("database.dbname", "./data/sub2api.db")
+	viper.SetDefault("database.dbname", appdata.DefaultSQLiteDBPath())
 	viper.SetDefault("database.sslmode", "disable")
 	viper.SetDefault("database.max_open_conns", 1)
 	viper.SetDefault("database.max_idle_conns", 1)
@@ -1308,7 +1309,7 @@ func setDefaults() {
 	// Pricing - 从 model-price-repo 同步模型定价和上下文窗口数据（固定到 commit，避免分支漂移）
 	viper.SetDefault("pricing.remote_url", "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json")
 	viper.SetDefault("pricing.hash_url", "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.sha256")
-	viper.SetDefault("pricing.data_dir", "./data")
+	viper.SetDefault("pricing.data_dir", appdata.ResolveDataDir())
 	viper.SetDefault("pricing.fallback_file", "./resources/model-pricing/model_prices_and_context_window.json")
 	viper.SetDefault("pricing.update_interval_hours", 24)
 	viper.SetDefault("pricing.hash_check_interval_minutes", 10)
@@ -2306,11 +2307,15 @@ func generateJWTSecret(byteLength int) (string, error) {
 // Priority: config.yaml > environment variables > defaults
 func GetServerAddress() string {
 	v := viper.New()
-	v.SetConfigName("config")
-	v.SetConfigType("yaml")
-	v.AddConfigPath(".")
-	v.AddConfigPath("./config")
-	v.AddConfigPath("/etc/sub2api")
+	if configFile := findConfigFile(configSearchPaths()); configFile != "" {
+		v.SetConfigFile(configFile)
+	} else {
+		v.SetConfigName("config")
+		v.SetConfigType("yaml")
+		for _, path := range configSearchPaths() {
+			v.AddConfigPath(path)
+		}
+	}
 
 	// Support SERVER_HOST and SERVER_PORT environment variables
 	v.AutomaticEnv()
@@ -2324,6 +2329,39 @@ func GetServerAddress() string {
 	host := v.GetString("server.host")
 	port := v.GetInt("server.port")
 	return fmt.Sprintf("%s:%d", host, port)
+}
+
+func ConfigFileUsed() string {
+	return strings.TrimSpace(viper.ConfigFileUsed())
+}
+
+func configSearchPaths() []string {
+	return []string{
+		appdata.ResolveDataDir(),
+		"/app/data",
+		".",
+		"./config",
+		"/etc/sub2api",
+	}
+}
+
+func findConfigFile(paths []string) string {
+	for _, dir := range paths {
+		trimmed := strings.TrimSpace(dir)
+		if trimmed == "" {
+			continue
+		}
+		for _, name := range []string{"config.yaml", "config.yml"} {
+			full := filepath.Join(trimmed, name)
+			if info, err := os.Stat(full); err == nil && !info.IsDir() {
+				if abs, err := filepath.Abs(full); err == nil {
+					return abs
+				}
+				return full
+			}
+		}
+	}
+	return ""
 }
 
 // ValidateAbsoluteHTTPURL 验证是否为有效的绝对 HTTP(S) URL

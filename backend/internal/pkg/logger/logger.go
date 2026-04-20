@@ -50,6 +50,7 @@ var (
 	currentSink   atomic.Value // sinkState
 	stdLogUndo    func()
 	bootstrapOnce sync.Once
+	clearFileOnce sync.Once
 )
 
 type sinkState struct {
@@ -326,6 +327,15 @@ func buildFileCore(enc zapcore.Encoder, atomic zap.AtomicLevel, options InitOpti
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, filePath, err
 	}
+	clearFileOnce.Do(func() {
+		clearLogArtifacts(dir, filepath.Base(filePath))
+		for _, legacy := range legacyLogFilePaths() {
+			if strings.TrimSpace(legacy) == "" || filepath.Clean(legacy) == filepath.Clean(filePath) {
+				continue
+			}
+			clearLogArtifacts(filepath.Dir(legacy), filepath.Base(legacy))
+		}
+	})
 	lj := &lumberjack.Logger{
 		Filename:   filePath,
 		MaxSize:    options.Rotation.MaxSizeMB,
@@ -335,6 +345,27 @@ func buildFileCore(enc zapcore.Encoder, atomic zap.AtomicLevel, options InitOpti
 		LocalTime:  options.Rotation.LocalTime,
 	}
 	return zapcore.NewCore(enc, zapcore.AddSync(lj), atomic), filePath, nil
+}
+
+func clearLogArtifacts(dir, base string) {
+	base = strings.TrimSpace(base)
+	if dir == "" || dir == "." || base == "" {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	stem := strings.TrimSuffix(base, filepath.Ext(base))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if name == base || strings.HasPrefix(name, stem+"-") || strings.HasPrefix(name, stem+".") {
+			_ = os.Remove(filepath.Join(dir, name))
+		}
+	}
 }
 
 type sinkCore struct {

@@ -262,6 +262,47 @@ func ensureSQLiteCompatibilityColumns(ctx context.Context, db *sql.DB) error {
 			}
 		}
 	}
+	return ensureSQLiteUsageLogConstraints(ctx, db)
+}
+
+func ensureSQLiteUsageLogConstraints(ctx context.Context, db *sql.DB) error {
+	if db == nil {
+		return nil
+	}
+	hasRequestID, err := sqliteColumnExists(ctx, db, "usage_logs", "request_id")
+	if err != nil {
+		return err
+	}
+	hasAPIKeyID, err := sqliteColumnExists(ctx, db, "usage_logs", "api_key_id")
+	if err != nil {
+		return err
+	}
+	if !hasRequestID || !hasAPIKeyID {
+		return nil
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE usage_logs SET request_id = NULL WHERE request_id = ''`); err != nil {
+		return fmt.Errorf("sqlite normalize usage_logs.request_id empty string: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+WITH ranked AS (
+	SELECT
+		id,
+		ROW_NUMBER() OVER (PARTITION BY api_key_id, request_id ORDER BY id) AS rn
+	FROM usage_logs
+	WHERE request_id IS NOT NULL
+)
+UPDATE usage_logs
+SET request_id = NULL
+WHERE id IN (SELECT id FROM ranked WHERE rn > 1)
+`); err != nil {
+		return fmt.Errorf("sqlite normalize duplicate usage_logs request ids: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_logs_request_id_api_key_unique
+	ON usage_logs (request_id, api_key_id)
+`); err != nil {
+		return fmt.Errorf("sqlite create usage_logs request_id/api_key unique index: %w", err)
+	}
 	return nil
 }
 

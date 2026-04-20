@@ -1248,6 +1248,34 @@ func TestOpenAINonStreamingContentTypeDefault(t *testing.T) {
 	}
 }
 
+func TestExtractOpenAIUsageFromJSONBytes_ResponseUsageWrapper(t *testing.T) {
+	body := []byte(`{"type":"response.completed","response":{"usage":{"input_tokens":11,"output_tokens":7,"input_tokens_details":{"cached_tokens":3}}}}`)
+	usage, ok := extractOpenAIUsageFromJSONBytes(body)
+	if !ok {
+		t.Fatal("expected wrapped response.usage to be parsed")
+	}
+	if usage.InputTokens != 11 || usage.OutputTokens != 7 || usage.CacheReadInputTokens != 3 {
+		t.Fatalf("unexpected usage: %+v", usage)
+	}
+}
+
+func TestExtractOpenAIUsageFromJSONBytes_NoUsageReturnsFalse(t *testing.T) {
+	body := []byte(`{"id":"resp_123","output":[]}`)
+	usage, ok := extractOpenAIUsageFromJSONBytes(body)
+	if ok {
+		t.Fatalf("expected missing usage to return false, got %+v", usage)
+	}
+}
+
+func TestParseSSEUsageBytes_ResponseDoneWrappedUsage(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	usage := &OpenAIUsage{}
+	svc.parseSSEUsageBytes([]byte(`{"type":"response.done","response":{"usage":{"input_tokens":5,"output_tokens":2,"input_tokens_details":{"cached_tokens":1}}}}`), usage)
+	if usage.InputTokens != 5 || usage.OutputTokens != 2 || usage.CacheReadInputTokens != 1 {
+		t.Fatalf("unexpected usage parsed from terminal event: %+v", usage)
+	}
+}
+
 func TestOpenAIStreamingHeadersOverride(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{

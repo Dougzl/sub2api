@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/appdata"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/gin-gonic/gin"
 )
@@ -70,7 +71,7 @@ func NewFrontendServer(settingsProvider PublicSettingsProvider) (*FrontendServer
 		baseHTML:    baseHTML,
 		cache:       cache,
 		settings:    settingsProvider,
-		overrideDir: filepath.Join("data", "public"),
+		overrideDir: appdata.DefaultPublicOverrideDir(),
 	}, nil
 }
 
@@ -251,7 +252,7 @@ func ServeEmbeddedFrontend() gin.HandlerFunc {
 		panic("failed to get dist subdirectory: " + err.Error())
 	}
 	fileServer := http.FileServer(http.FS(distFS))
-	overrideDir := filepath.Join("data", "public")
+	overrideDir := appdata.DefaultPublicOverrideDir()
 
 	return func(c *gin.Context) {
 		path := c.Request.URL.Path

@@ -13,6 +13,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/appdata"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/migrations"
 
@@ -127,7 +128,7 @@ func InitEnt(cfg *config.Config) (*ent.Client, *sql.DB, error) {
 
 func sqliteDSN(path string) string {
 	if path == "" {
-		path = "./data/sub2api.db"
+		path = appdata.DefaultSQLiteDBPath()
 	}
 	dir := filepath.Dir(path)
 	if dir != "." && dir != "" {

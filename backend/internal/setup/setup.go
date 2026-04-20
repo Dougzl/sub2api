@@ -8,12 +8,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/appdata"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -42,29 +42,7 @@ func setupDefaultAdminConcurrency() int {
 // GetDataDir returns the data directory for storing config and lock files.
 // Priority: DATA_DIR env > /app/data (if exists and writable) > current directory
 func GetDataDir() string {
-	// Check DATA_DIR environment variable first
-	if dir := os.Getenv("DATA_DIR"); dir != "" {
-		return dir
-	}
-
-	// Check if /app/data exists and is writable (Docker environment).
-	// On Windows, paths like /app/data resolve under the current drive (often
-	// C:\app\data). Do not treat that as the default local app data directory.
-	dockerDataDir := "/app/data"
-	if runtime.GOOS != "windows" {
-		if info, err := os.Stat(dockerDataDir); err == nil && info.IsDir() {
-			// Try to check if writable by creating a temp file
-			testFile := dockerDataDir + "/.write_test"
-			if f, err := os.Create(testFile); err == nil {
-				_ = f.Close()
-				_ = os.Remove(testFile)
-				return dockerDataDir
-			}
-		}
-	}
-
-	// Default to current directory
-	return "."
+	return appdata.ResolveDataDir()
 }
 
 // GetConfigFilePath returns the full path to config.yaml
@@ -180,7 +158,7 @@ func sqliteSetupStateComplete() bool {
 	if engine != "" && !strings.EqualFold(engine, "sqlite") {
 		return false
 	}
-	dbPath := getEnvOrDefault("DATABASE_DBNAME", "./data/sub2api.db")
+	dbPath := getEnvOrDefault("DATABASE_DBNAME", appdata.DefaultSQLiteDBPath())
 	if _, err := os.Stat(dbPath); err != nil {
 		return false
 	}
@@ -207,7 +185,7 @@ func markSQLiteSetupComplete(cfg *SetupConfig) {
 	}
 	dbPath := strings.TrimSpace(cfg.Database.DBName)
 	if dbPath == "" {
-		dbPath = "./data/sub2api.db"
+		dbPath = appdata.DefaultSQLiteDBPath()
 	}
 	db, err := sql.Open("sqlite", sqliteSetupDSN(dbPath))
 	if err != nil {
@@ -584,7 +562,7 @@ func setupConfigToRuntimeConfig(cfg *SetupConfig) *config.Config {
 		engine = "sqlite"
 	}
 	appCfg.Database.Engine = engine
-	appCfg.Database.DBName = firstNonEmptySetup(cfg.Database.DBName, "./data/sub2api.db")
+	appCfg.Database.DBName = firstNonEmptySetup(cfg.Database.DBName, appdata.DefaultSQLiteDBPath())
 	appCfg.Database.Host = firstNonEmptySetup(cfg.Database.Host, "localhost")
 	appCfg.Database.Port = cfg.Database.Port
 	appCfg.Database.User = cfg.Database.User
@@ -785,7 +763,7 @@ func AutoSetupFromEnv() error {
 			Port:     getEnvIntOrDefault("DATABASE_PORT", 0),
 			User:     getEnvOrDefault("DATABASE_USER", ""),
 			Password: getEnvOrDefault("DATABASE_PASSWORD", ""),
-			DBName:   getEnvOrDefault("DATABASE_DBNAME", "./data/sub2api.db"),
+			DBName:   getEnvOrDefault("DATABASE_DBNAME", appdata.DefaultSQLiteDBPath()),
 			SSLMode:  getEnvOrDefault("DATABASE_SSLMODE", "disable"),
 		},
 		Redis: RedisConfig{

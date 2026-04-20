@@ -525,6 +525,10 @@ func (r *usageLogRepository) flushCreateBatch(db *sql.DB, batch []usageLogCreate
 	if len(batch) == 0 {
 		return
 	}
+	if isSQLiteStorage() {
+		r.flushCreateBatchSQLite(db, batch)
+		return
+	}
 
 	uniqueOrder := make([]string, 0, len(batch))
 	preparedByKey := make(map[string]usageLogInsertPrepared, len(batch))
@@ -633,6 +637,10 @@ func (r *usageLogRepository) flushBestEffortBatch(db *sql.DB, batch []usageLogBe
 	if len(batch) == 0 {
 		return
 	}
+	if isSQLiteStorage() {
+		r.flushBestEffortBatchSQLite(db, batch)
+		return
+	}
 
 	type bestEffortGroup struct {
 		prepared usageLogInsertPrepared
@@ -698,6 +706,46 @@ func (r *usageLogRepository) flushBestEffortBatch(db *sql.DB, batch []usageLogBe
 		for _, req := range group.reqs {
 			sendUsageLogBestEffortResult(req.resultCh, nil)
 		}
+	}
+}
+
+func (r *usageLogRepository) flushCreateBatchSQLite(db *sql.DB, batch []usageLogCreateRequest) {
+	for _, req := range batch {
+		if req.log == nil {
+			completeUsageLogCreateRequest(req, usageLogCreateResult{inserted: false, err: nil})
+			continue
+		}
+		if req.shared != nil && !req.shared.state.CompareAndSwap(usageLogCreateStateQueued, usageLogCreateStateProcessing) {
+			if req.shared.state.Load() == usageLogCreateStateCanceled {
+				completeUsageLogCreateRequest(req, usageLogCreateResult{
+					inserted: false,
+					err:      service.MarkUsageLogCreateNotPersisted(context.Canceled),
+				})
+				continue
+			}
+		}
+		fallbackCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		inserted, err := r.createSingle(fallbackCtx, db, req.log)
+		cancel()
+		completeUsageLogCreateRequest(req, usageLogCreateResult{inserted: inserted, err: err})
+	}
+}
+
+func (r *usageLogRepository) flushBestEffortBatchSQLite(db *sql.DB, batch []usageLogBestEffortRequest) {
+	if len(batch) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	for _, req := range batch {
+		err := execUsageLogInsertNoResult(ctx, db, req.prepared)
+		if err == nil {
+			if key, ok := r.bestEffortRecentKey(req.prepared.requestID, req.apiKeyID); ok {
+				r.bestEffortRecent.SetDefault(key, struct{}{})
+			}
+		}
+		sendUsageLogBestEffortResult(req.resultCh, err)
 	}
 }
 
@@ -1233,6 +1281,11 @@ func prepareUsageLogInsert(log *service.UsageLog) usageLogInsertPrepared {
 	modelMappingChain := nullString(log.ModelMappingChain)
 	billingTier := nullString(log.BillingTier)
 	billingMode := nullString(log.BillingMode)
+	accountStatsCost := log.AccountStatsCost
+	if accountStatsCost == nil {
+		fallback := log.TotalCost
+		accountStatsCost = &fallback
+	}
 	requestedModel := strings.TrimSpace(log.RequestedModel)
 	if requestedModel == "" {
 		requestedModel = strings.TrimSpace(log.Model)
@@ -1294,7 +1347,7 @@ func prepareUsageLogInsert(log *service.UsageLog) usageLogInsertPrepared {
 			modelMappingChain,
 			billingTier,
 			billingMode,
-			log.AccountStatsCost, // account_stats_cost
+			accountStatsCost, // account_stats_cost
 			createdAt,
 		},
 	}

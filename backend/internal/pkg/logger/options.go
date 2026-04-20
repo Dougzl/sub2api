@@ -3,9 +3,10 @@ package logger
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/appdata"
 )
 
 const (
@@ -98,29 +99,18 @@ func resolveLogFilePath(explicit string) string {
 	if explicit != "" {
 		return explicit
 	}
-	dataDir := strings.TrimSpace(os.Getenv("DATA_DIR"))
-	if dataDir != "" {
-		return filepath.Join(dataDir, "logs", defaultLogFilename)
-	}
-	return defaultUserLogPath()
+	return appdata.DefaultLogFilePath()
 }
 
-func defaultUserLogPath() string {
-	if runtime.GOOS == "windows" {
-		if localAppData := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); localAppData != "" {
-			return filepath.Join(localAppData, defaultAppDirName, "logs", defaultLogFilename)
-		}
-		if userProfile := strings.TrimSpace(os.Getenv("USERPROFILE")); userProfile != "" {
-			return filepath.Join(userProfile, "."+defaultAppDirName, "logs", defaultLogFilename)
-		}
+func legacyLogFilePaths() []string {
+	paths := make([]string, 0, 2)
+	if localAppData := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); localAppData != "" {
+		paths = append(paths, filepath.Join(localAppData, defaultAppDirName, "logs", defaultLogFilename))
 	}
-	if stateHome := strings.TrimSpace(os.Getenv("XDG_STATE_HOME")); stateHome != "" {
-		return filepath.Join(stateHome, defaultAppDirName, "logs", defaultLogFilename)
+	if userProfile := strings.TrimSpace(os.Getenv("USERPROFILE")); userProfile != "" {
+		paths = append(paths, filepath.Join(userProfile, "."+defaultAppDirName, "logs", defaultLogFilename))
 	}
-	if home := strings.TrimSpace(os.Getenv("HOME")); home != "" {
-		return filepath.Join(home, ".local", "state", defaultAppDirName, "logs", defaultLogFilename)
-	}
-	return DefaultContainerLogPath
+	return paths
 }
 
 func bootstrapOptions() InitOptions {

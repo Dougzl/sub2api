@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/appdata"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/require"
 )
@@ -672,6 +673,19 @@ func TestConfigAddressHelpers(t *testing.T) {
 	}
 }
 
+func TestDatabaseConfigDSN_SQLiteDefaultUsesAppDataPath(t *testing.T) {
+	t.Setenv("DATA_DIR", t.TempDir())
+	dbCfg := DatabaseConfig{
+		Engine: "sqlite",
+		DBName: "",
+	}
+	got := dbCfg.DSN()
+	want := appdata.DefaultSQLiteDBPath()
+	if got != want {
+		t.Fatalf("DatabaseConfig.DSN() = %q, want %q", got, want)
+	}
+}
+
 func TestNormalizeStringSlice(t *testing.T) {
 	values := normalizeStringSlice([]string{" a ", "", "b", "   ", "c"})
 	if len(values) != 3 || values[0] != "a" || values[1] != "b" || values[2] != "c" {
@@ -689,6 +703,69 @@ func TestGetServerAddressFromEnv(t *testing.T) {
 	address := GetServerAddress()
 	if address != "127.0.0.1:9090" {
 		t.Fatalf("GetServerAddress() = %q", address)
+	}
+}
+
+func TestGetServerAddressFromDataDirConfigYML(t *testing.T) {
+	t.Setenv("SERVER_HOST", "")
+	t.Setenv("SERVER_PORT", "")
+	dataDir := t.TempDir()
+	t.Setenv("DATA_DIR", dataDir)
+	configPath := filepath.Join(dataDir, "config.yml")
+	if err := os.WriteFile(configPath, []byte("server:\n  host: 127.0.0.1\n  port: 9234\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	address := GetServerAddress()
+	if address != "127.0.0.1:9234" {
+		t.Fatalf("GetServerAddress() = %q", address)
+	}
+}
+
+func TestLoadForBootstrapReadsConfigYMLFromDataDir(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	dataDir := t.TempDir()
+	t.Setenv("DATA_DIR", dataDir)
+	configPath := filepath.Join(dataDir, "config.yml")
+	if err := os.WriteFile(configPath, []byte("server:\n  host: 127.0.0.1\n  port: 9235\ndatabase:\n  engine: sqlite\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	cfg, err := LoadForBootstrap()
+	if err != nil {
+		t.Fatalf("LoadForBootstrap() error = %v", err)
+	}
+	if cfg.Server.Port != 9235 {
+		t.Fatalf("Server.Port = %d, want 9235", cfg.Server.Port)
+	}
+}
+
+func TestLoadForBootstrapResolvesRelativeSQLitePathAgainstConfigFileDir(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	configDir := t.TempDir()
+	t.Setenv("DATA_DIR", "")
+	configPath := filepath.Join(configDir, "config.yml")
+	if err := os.WriteFile(configPath, []byte("server:\n  port: 9236\ndatabase:\n  engine: sqlite\n  dbname: custom.db\npricing:\n  data_dir: pricing-cache\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	t.Setenv("HOME", configDir)
+	t.Setenv("USERPROFILE", configDir)
+	t.Setenv("LOCALAPPDATA", "")
+
+	// Put config under current dir so config search picks it deterministically.
+	wd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(wd) })
+	if err := os.Chdir(configDir); err != nil {
+		t.Fatalf("Chdir() error = %v", err)
+	}
+
+	cfg, err := LoadForBootstrap()
+	if err != nil {
+		t.Fatalf("LoadForBootstrap() error = %v", err)
+	}
+	if got, want := cfg.Database.DBName, filepath.Join(configDir, "custom.db"); got != want {
+		t.Fatalf("Database.DBName = %q, want %q", got, want)
+	}
+	if got, want := cfg.Pricing.DataDir, filepath.Join(configDir, "pricing-cache"); got != want {
+		t.Fatalf("Pricing.DataDir = %q, want %q", got, want)
 	}
 }
 

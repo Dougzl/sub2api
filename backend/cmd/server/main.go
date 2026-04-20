@@ -136,9 +136,21 @@ func runMainServer() {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+	if configPath := config.ConfigFileUsed(); strings.TrimSpace(configPath) != "" {
+		log.Printf("Using config file: %s", configPath)
+	} else {
+		log.Printf("Using config file: <defaults + env>")
+	}
+	log.Printf("Using database engine=%s dbname=%s", cfg.Database.Engine, cfg.Database.DBName)
 	if err := logger.Init(logger.OptionsFromConfig(cfg.Log)); err != nil {
 		log.Fatalf("Failed to initialize logger: %v", err)
 	}
+	if configPath := config.ConfigFileUsed(); strings.TrimSpace(configPath) != "" {
+		log.Printf("Using config file: %s", configPath)
+	} else {
+		log.Printf("Using config file: <defaults + env>")
+	}
+	log.Printf("Using database engine=%s dbname=%s", cfg.Database.Engine, cfg.Database.DBName)
 	if cfg.RunMode == config.RunModeSimple {
 		log.Println("⚠️  WARNING: Running in SIMPLE mode - billing and quota checks are DISABLED")
 	}

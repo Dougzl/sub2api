@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/appdata"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 
 	"github.com/gin-gonic/gin"
@@ -258,7 +259,7 @@ func install(c *gin.Context) {
 	// SQLite MVP defaults: no external DB/Redis configuration required.
 	if strings.EqualFold(req.Database.Engine, "sqlite") {
 		if req.Database.DBName == "" {
-			req.Database.DBName = getEnvOrDefault("DATABASE_DBNAME", "./data/sub2api.db")
+			req.Database.DBName = getEnvOrDefault("DATABASE_DBNAME", appdata.DefaultSQLiteDBPath())
 		}
 		if req.Database.SSLMode == "" {
 			req.Database.SSLMode = "disable"

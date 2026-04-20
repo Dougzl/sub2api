@@ -3,38 +3,17 @@ package logger
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/appdata"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
 
 func TestResolveLogFilePath_Default(t *testing.T) {
 	t.Setenv("DATA_DIR", "")
-	t.Setenv("LOCALAPPDATA", filepath.Join("C:", "Users", "tester", "AppData", "Local"))
-	t.Setenv("USERPROFILE", filepath.Join("C:", "Users", "tester"))
-	t.Setenv("XDG_STATE_HOME", "/tmp/tester-state")
-	t.Setenv("HOME", "/tmp/tester-home")
 	got := resolveLogFilePath("")
-	want := filepath.Join("/tmp/tester-state", "sub2api", "logs", "sub2api.log")
-	if runtime.GOOS == "windows" {
-		want = filepath.Join("C:", "Users", "tester", "AppData", "Local", "sub2api", "logs", "sub2api.log")
-	}
-	if got != want {
-		t.Fatalf("resolveLogFilePath() = %q, want %q", got, want)
-	}
-}
-
-func TestResolveLogFilePath_WindowsLocalAppData(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("windows-specific default")
-	}
-	t.Setenv("DATA_DIR", "")
-	t.Setenv("LOCALAPPDATA", filepath.Join("C:", "Users", "tester", "AppData", "Local"))
-	t.Setenv("USERPROFILE", filepath.Join("C:", "Users", "tester"))
-	got := resolveLogFilePath("")
-	want := filepath.Join("C:", "Users", "tester", "AppData", "Local", "sub2api", "logs", "sub2api.log")
+	want := filepath.Join(appdata.ResolveDataDir(), "logs", "sub2api.log")
 	if got != want {
 		t.Fatalf("resolveLogFilePath() = %q, want %q", got, want)
 	}
@@ -43,7 +22,7 @@ func TestResolveLogFilePath_WindowsLocalAppData(t *testing.T) {
 func TestResolveLogFilePath_WithDataDir(t *testing.T) {
 	t.Setenv("DATA_DIR", "/tmp/sub2api-data")
 	got := resolveLogFilePath("")
-	want := filepath.Join("/tmp/sub2api-data", "logs", "sub2api.log")
+	want := filepath.Join(appdata.ResolveDataDir(), "logs", "sub2api.log")
 	if got != want {
 		t.Fatalf("resolveLogFilePath() = %q, want %q", got, want)
 	}

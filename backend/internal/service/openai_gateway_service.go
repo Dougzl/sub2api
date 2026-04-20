@@ -3886,26 +3886,35 @@ func (s *OpenAIGatewayService) parseSSEUsageBytes(data []byte, usage *OpenAIUsag
 		return
 	}
 
-	usage.InputTokens = int(gjson.GetBytes(data, "response.usage.input_tokens").Int())
-	usage.OutputTokens = int(gjson.GetBytes(data, "response.usage.output_tokens").Int())
-	usage.CacheReadInputTokens = int(gjson.GetBytes(data, "response.usage.input_tokens_details.cached_tokens").Int())
+	if parsedUsage, ok := extractOpenAIUsageFromJSONBytes(data); ok {
+		*usage = parsedUsage
+	}
 }
 
 func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return OpenAIUsage{}, false
 	}
-	values := gjson.GetManyBytes(
-		body,
-		"usage.input_tokens",
-		"usage.output_tokens",
-		"usage.input_tokens_details.cached_tokens",
-	)
-	return OpenAIUsage{
-		InputTokens:          int(values[0].Int()),
-		OutputTokens:         int(values[1].Int()),
-		CacheReadInputTokens: int(values[2].Int()),
-	}, true
+	for _, prefix := range []string{"usage", "response.usage"} {
+		inputPath := prefix + ".input_tokens"
+		outputPath := prefix + ".output_tokens"
+		cacheReadPath := prefix + ".input_tokens_details.cached_tokens"
+		imageOutputPath := prefix + ".output_tokens_details.image_tokens"
+		inputResult := gjson.GetBytes(body, inputPath)
+		outputResult := gjson.GetBytes(body, outputPath)
+		cacheReadResult := gjson.GetBytes(body, cacheReadPath)
+		imageOutputResult := gjson.GetBytes(body, imageOutputPath)
+		if !inputResult.Exists() && !outputResult.Exists() && !cacheReadResult.Exists() && !imageOutputResult.Exists() {
+			continue
+		}
+		return OpenAIUsage{
+			InputTokens:          int(inputResult.Int()),
+			OutputTokens:         int(outputResult.Int()),
+			CacheReadInputTokens: int(cacheReadResult.Int()),
+			ImageOutputTokens:    int(imageOutputResult.Int()),
+		}, true
+	}
+	return OpenAIUsage{}, false
 }
 
 func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (*OpenAIUsage, error) {

@@ -200,3 +200,29 @@ func TestInit_CallerShouldPointToCallsite(t *testing.T) {
 		t.Fatalf("caller should point to this test file, got: %s", caller)
 	}
 }
+
+func TestClearLogArtifacts_RemovesCurrentAndRotatedLogs(t *testing.T) {
+	tmpDir := t.TempDir()
+	files := []string{
+		filepath.Join(tmpDir, "sub2api.log"),
+		filepath.Join(tmpDir, "sub2api-2026-04-20T01-02-03.000.log"),
+		filepath.Join(tmpDir, "sub2api.log.gz"),
+		filepath.Join(tmpDir, "other.log"),
+	}
+	for _, path := range files {
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+
+	clearLogArtifacts(tmpDir, "sub2api.log")
+
+	for _, path := range files[:3] {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("expected %s to be removed, err=%v", path, err)
+		}
+	}
+	if _, err := os.Stat(files[3]); err != nil {
+		t.Fatalf("expected %s to remain, err=%v", files[3], err)
+	}
+}
