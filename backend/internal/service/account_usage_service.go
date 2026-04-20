@@ -514,6 +514,7 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 		"has_7d_snapshot", usage.SevenDay != nil,
 		"ws_v2_enabled", account.IsOpenAIResponsesWebSocketV2Enabled(),
 		"codex_usage_updated_at", openAICodexExtraString(account.Extra, "codex_usage_updated_at"),
+		"account_extra", account.Extra,
 	)
 
 	shouldRefresh := shouldRefreshOpenAICodexSnapshot(account, usage, now)
@@ -735,23 +736,52 @@ func extractOpenAICodexProbeUpdates(resp *http.Response) (map[string]any, error)
 	if resp == nil {
 		return nil, nil
 	}
+	slog.Info("openai_usage_probe_all_headers",
+		"status_code", resp.StatusCode,
+		"headers", flattenHTTPHeaders(resp.Header),
+	)
+	primaryUsedPercent := strings.TrimSpace(resp.Header.Get("x-codex-primary-used-percent"))
+	primaryResetAfterSeconds := strings.TrimSpace(resp.Header.Get("x-codex-primary-reset-after-seconds"))
+	primaryWindowMinutes := strings.TrimSpace(resp.Header.Get("x-codex-primary-window-minutes"))
+	secondaryUsedPercent := strings.TrimSpace(resp.Header.Get("x-codex-secondary-used-percent"))
+	secondaryResetAfterSeconds := strings.TrimSpace(resp.Header.Get("x-codex-secondary-reset-after-seconds"))
+	secondaryWindowMinutes := strings.TrimSpace(resp.Header.Get("x-codex-secondary-window-minutes"))
 	if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
 		slog.Info("openai_usage_probe_headers_detected",
 			"status_code", resp.StatusCode,
-			"has_primary_used_percent", strings.TrimSpace(resp.Header.Get("x-codex-primary-used-percent")) != "",
-			"has_secondary_used_percent", strings.TrimSpace(resp.Header.Get("x-codex-secondary-used-percent")) != "",
+			"x_codex_primary_used_percent", primaryUsedPercent,
+			"x_codex_primary_reset_after_seconds", primaryResetAfterSeconds,
+			"x_codex_primary_window_minutes", primaryWindowMinutes,
+			"x_codex_secondary_used_percent", secondaryUsedPercent,
+			"x_codex_secondary_reset_after_seconds", secondaryResetAfterSeconds,
+			"x_codex_secondary_window_minutes", secondaryWindowMinutes,
 		)
 		return buildCodexUsageExtraUpdates(snapshot, time.Now()), nil
 	}
 	slog.Info("openai_usage_probe_headers_missing",
 		"status_code", resp.StatusCode,
-		"x_codex_primary_used_percent", strings.TrimSpace(resp.Header.Get("x-codex-primary-used-percent")),
-		"x_codex_secondary_used_percent", strings.TrimSpace(resp.Header.Get("x-codex-secondary-used-percent")),
+		"x_codex_primary_used_percent", primaryUsedPercent,
+		"x_codex_primary_reset_after_seconds", primaryResetAfterSeconds,
+		"x_codex_primary_window_minutes", primaryWindowMinutes,
+		"x_codex_secondary_used_percent", secondaryUsedPercent,
+		"x_codex_secondary_reset_after_seconds", secondaryResetAfterSeconds,
+		"x_codex_secondary_window_minutes", secondaryWindowMinutes,
 	)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("openai codex probe returned status %d", resp.StatusCode)
 	}
 	return nil, nil
+}
+
+func flattenHTTPHeaders(header http.Header) map[string]string {
+	if len(header) == 0 {
+		return map[string]string{}
+	}
+	flat := make(map[string]string, len(header))
+	for key, values := range header {
+		flat[key] = strings.Join(values, ", ")
+	}
+	return flat
 }
 
 func mergeAccountExtra(account *Account, updates map[string]any) {
