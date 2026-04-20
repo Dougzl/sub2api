@@ -3796,9 +3796,14 @@ func (r *usageLogRepository) GetAccountUsageStats(ctx context.Context, accountID
 		daysCount = 30
 	}
 
-	query := `
+	dateExpr := "TO_CHAR(created_at, 'YYYY-MM-DD')"
+	if isSQLiteStorage() {
+		dateExpr = "substr(CAST(created_at AS TEXT), 1, 10)"
+	}
+
+	query := fmt.Sprintf(`
 		SELECT
-			TO_CHAR(created_at, 'YYYY-MM-DD') as date,
+			%s as date,
 			COUNT(*) as requests,
 			COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as tokens,
 			COALESCE(SUM(total_cost), 0) as cost,
@@ -3808,7 +3813,7 @@ func (r *usageLogRepository) GetAccountUsageStats(ctx context.Context, accountID
 		WHERE account_id = $1 AND created_at >= $2 AND created_at < $3
 		GROUP BY date
 		ORDER BY date ASC
-	`
+	`, dateExpr)
 
 	rows, err := r.sql.QueryContext(ctx, query, accountID, startTime, endTime)
 	if err != nil {

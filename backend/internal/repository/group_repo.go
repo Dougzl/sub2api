@@ -557,9 +557,14 @@ func (r *groupRepository) DeleteCascade(ctx context.Context, id int64) ([]int64,
 	}
 	// err 为 dbent.ErrTxStarted 时，复用当前 client 参与同一事务。
 
-	// Lock the group row to avoid concurrent writes while we cascade.
-	// 这里使用 exec.QueryContext 手动扫描，确保同一事务内加锁并能区分"未找到"与其他错误。
-	rows, err := exec.QueryContext(ctx, "SELECT id FROM groups WHERE id = $1 AND deleted_at IS NULL FOR UPDATE", id)
+	// PostgreSQL: lock the group row to avoid concurrent writes while we cascade.
+	// SQLite does not support FOR UPDATE; the surrounding transaction is the best
+	// available serialization mechanism there.
+	lockQuery := "SELECT id FROM groups WHERE id = $1 AND deleted_at IS NULL"
+	if !isSQLiteStorage() {
+		lockQuery += " FOR UPDATE"
+	}
+	rows, err := exec.QueryContext(ctx, lockQuery, id)
 	if err != nil {
 		return nil, err
 	}
@@ -603,7 +608,7 @@ func (r *groupRepository) DeleteCascade(ctx context.Context, id int64) ([]int64,
 		}
 
 		// 软删除订阅：设置 deleted_at 而非硬删除
-		if _, err := exec.ExecContext(ctx, "UPDATE user_subscriptions SET deleted_at = NOW() WHERE group_id = $1 AND deleted_at IS NULL", id); err != nil {
+		if _, err := exec.ExecContext(ctx, "UPDATE user_subscriptions SET deleted_at = CURRENT_TIMESTAMP WHERE group_id = $1 AND deleted_at IS NULL", id); err != nil {
 			return nil, err
 		}
 	}

@@ -5,9 +5,11 @@ package service
 import (
 	"context"
 	"testing"
+	"sync/atomic"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/websearch"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sync/singleflight"
 )
 
 // --- validateWebSearchConfig ---
@@ -96,6 +98,20 @@ func TestParseWebSearchConfigJSON_BackwardCompatibility(t *testing.T) {
 	require.True(t, cfg.Enabled)
 	require.Len(t, cfg.Providers, 1)
 	require.Equal(t, int64(1000), *cfg.Providers[0].QuotaLimit)
+}
+
+func TestGetWebSearchEmulationConfig_SettingNotFoundReturnsEmptyConfig(t *testing.T) {
+	repo := newMockSettingRepo()
+	svc := NewSettingService(repo, nil)
+
+	webSearchEmulationCache = atomic.Value{}
+	webSearchEmulationSF = singleflight.Group{}
+
+	cfg, err := svc.GetWebSearchEmulationConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	require.False(t, cfg.Enabled)
+	require.Empty(t, cfg.Providers)
 }
 
 // --- SanitizeWebSearchConfig ---

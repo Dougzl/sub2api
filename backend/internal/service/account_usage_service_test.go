@@ -207,3 +207,24 @@ func TestBuildCodexUsageProgressFromExtra_ZerosExpiredWindow(t *testing.T) {
 		}
 	})
 }
+
+func TestAccountUsageService_ShouldProbeOpenAICodexSnapshot_BypassesProbeCacheWhenRateLimited(t *testing.T) {
+	t.Parallel()
+
+	cache := NewUsageCache()
+	now := time.Now()
+	account := &Account{
+		ID:               123,
+		Platform:         PlatformOpenAI,
+		Type:             AccountTypeOAuth,
+		RateLimitResetAt: ptrUsageTime(now.Add(15 * time.Minute)),
+	}
+	cache.openAIProbeCache.Store(account.ID, now)
+
+	svc := &AccountUsageService{cache: cache}
+	if !svc.shouldProbeOpenAICodexSnapshot(account, now.Add(1*time.Minute)) {
+		t.Fatal("expected rate-limited account to bypass openai probe cache")
+	}
+}
+
+func ptrUsageTime(t time.Time) *time.Time { return &t }

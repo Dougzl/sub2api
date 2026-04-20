@@ -173,6 +173,44 @@ func TestUsageLogRepositoryFlushBestEffortBatch_SQLiteFallsBackToSingleInsert(t 
 	}
 }
 
+func TestUsageLogRepositoryGetAccountUsageStats_SQLiteUsesStrftime(t *testing.T) {
+	setRuntimeStorageEngine("sqlite")
+	t.Cleanup(func() {
+		setRuntimeStorageEngine("")
+	})
+
+	db := openUsageLogSQLiteDB(t)
+	defer func() { _ = db.Close() }()
+
+	ctx := context.Background()
+	repo := newUsageLogRepositoryWithSQL(nil, db)
+	start := time.Date(2026, 4, 20, 0, 0, 0, 0, time.UTC)
+	end := start.Add(24 * time.Hour)
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO usage_logs (
+			user_id, api_key_id, account_id, request_id, model,
+			input_tokens, output_tokens, total_cost, actual_cost, account_stats_cost, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, 1, 9, 10, "stats-1", "gpt-5.4", 12, 8, 1.5, 1.25, 1.25, start.Add(2*time.Hour)); err != nil {
+		t.Fatalf("seed usage_logs: %v", err)
+	}
+
+	resp, err := repo.GetAccountUsageStats(ctx, 10, start, end)
+	if err != nil {
+		t.Fatalf("GetAccountUsageStats: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if len(resp.History) != 1 {
+		t.Fatalf("expected 1 history item, got %d", len(resp.History))
+	}
+	if resp.History[0].Date != "2026-04-20" {
+		t.Fatalf("expected history date 2026-04-20, got %q", resp.History[0].Date)
+	}
+}
+
 func openUsageLogSQLiteDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:usage_log_repo_sqlite?mode=memory&cache=shared")

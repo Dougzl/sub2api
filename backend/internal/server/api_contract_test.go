@@ -662,6 +662,23 @@ func TestAPIContracts(t *testing.T) {
 	}
 }
 
+func TestAdminSettingsWebSearchEmulationRoute_DefaultsToEmptyConfig(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	deps := newContractDeps(t)
+	status, body := doRequest(t, deps.router, http.MethodGet, "/api/v1/admin/settings/web-search-emulation?timezone=Asia%2FShanghai", "", nil)
+
+	require.Equal(t, http.StatusOK, status)
+	require.JSONEq(t, `{
+		"code": 0,
+		"message": "success",
+		"data": {
+			"enabled": false,
+			"providers": []
+		}
+	}`, body)
+}
+
 type contractDeps struct {
 	now         time.Time
 	router      http.Handler
@@ -780,6 +797,7 @@ func newContractDeps(t *testing.T) *contractDeps {
 	v1Admin := v1.Group("/admin")
 	v1Admin.Use(adminAuth)
 	v1Admin.GET("/settings", adminSettingHandler.GetSettings)
+	v1Admin.GET("/settings/web-search-emulation", adminSettingHandler.GetWebSearchEmulationConfig)
 	v1Admin.POST("/accounts/bulk-update", adminAccountHandler.BulkUpdate)
 
 	return &contractDeps{

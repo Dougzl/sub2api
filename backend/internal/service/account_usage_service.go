@@ -507,7 +507,7 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 		usage.SevenDay = progress
 	}
 
-	if shouldRefreshOpenAICodexSnapshot(account, usage, now) && s.shouldProbeOpenAICodexSnapshot(account.ID, now) {
+	if shouldRefreshOpenAICodexSnapshot(account, usage, now) && s.shouldProbeOpenAICodexSnapshot(account, now) {
 		if updates, err := s.probeOpenAICodexSnapshot(ctx, account); err == nil && len(updates) > 0 {
 			mergeAccountExtra(account, updates)
 			if usage.UpdatedAt == nil {
@@ -577,16 +577,19 @@ func isOpenAICodexSnapshotStale(account *Account, now time.Time) bool {
 	return now.Sub(ts) >= openAIProbeCacheTTL
 }
 
-func (s *AccountUsageService) shouldProbeOpenAICodexSnapshot(accountID int64, now time.Time) bool {
-	if s == nil || s.cache == nil || accountID <= 0 {
+func (s *AccountUsageService) shouldProbeOpenAICodexSnapshot(account *Account, now time.Time) bool {
+	if s == nil || s.cache == nil || account == nil || account.ID <= 0 {
 		return true
 	}
-	if cached, ok := s.cache.openAIProbeCache.Load(accountID); ok {
+	if account.IsRateLimited() {
+		return true
+	}
+	if cached, ok := s.cache.openAIProbeCache.Load(account.ID); ok {
 		if ts, ok := cached.(time.Time); ok && now.Sub(ts) < openAIProbeCacheTTL {
 			return false
 		}
 	}
-	s.cache.openAIProbeCache.Store(accountID, now)
+	s.cache.openAIProbeCache.Store(account.ID, now)
 	return true
 }
 

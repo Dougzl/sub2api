@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
@@ -36,7 +37,18 @@ func (r *channelRepository) batchLoadAccountStatsPricingRules(ctx context.Contex
 	var ruleIDs []int64
 	for rows.Next() {
 		var rule service.AccountStatsPricingRule
-		if err := rows.Scan(
+		if isSQLiteStorage() {
+			var groupIDsJSON, accountIDsJSON string
+			if err := rows.Scan(
+				&rule.ID, &rule.ChannelID, &rule.Name,
+				&groupIDsJSON, &accountIDsJSON,
+				&rule.SortOrder, &rule.CreatedAt, &rule.UpdatedAt,
+			); err != nil {
+				return nil, fmt.Errorf("scan account stats pricing rule: %w", err)
+			}
+			rule.GroupIDs = unmarshalInt64SliceJSON(groupIDsJSON)
+			rule.AccountIDs = unmarshalInt64SliceJSON(accountIDsJSON)
+		} else if err := rows.Scan(
 			&rule.ID, &rule.ChannelID, &rule.Name,
 			pq.Array(&rule.GroupIDs), pq.Array(&rule.AccountIDs),
 			&rule.SortOrder, &rule.CreatedAt, &rule.UpdatedAt,
@@ -164,10 +176,16 @@ func replaceAccountStatsPricingRulesTx(ctx context.Context, tx *sql.Tx, channelI
 
 // createAccountStatsPricingRuleTx 在事务中创建单条账号统计定价规则及其模型定价
 func createAccountStatsPricingRuleTx(ctx context.Context, tx *sql.Tx, rule *service.AccountStatsPricingRule) error {
+	groupIDsArg := any(pq.Array(rule.GroupIDs))
+	accountIDsArg := any(pq.Array(rule.AccountIDs))
+	if isSQLiteStorage() {
+		groupIDsArg = marshalInt64SliceJSON(rule.GroupIDs)
+		accountIDsArg = marshalInt64SliceJSON(rule.AccountIDs)
+	}
 	err := tx.QueryRowContext(ctx,
 		`INSERT INTO channel_account_stats_pricing_rules (channel_id, name, group_ids, account_ids, sort_order)
 		 VALUES ($1, $2, $3, $4, $5) RETURNING id, created_at, updated_at`,
-		rule.ChannelID, rule.Name, pq.Array(rule.GroupIDs), pq.Array(rule.AccountIDs), rule.SortOrder,
+		rule.ChannelID, rule.Name, groupIDsArg, accountIDsArg, rule.SortOrder,
 	).Scan(&rule.ID, &rule.CreatedAt, &rule.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("insert account stats pricing rule: %w", err)
@@ -266,4 +284,27 @@ func (r *channelRepository) batchLoadAccountStatsIntervals(ctx context.Context, 
 		result[iv.PricingID] = append(result[iv.PricingID], iv)
 	}
 	return result, rows.Err()
+}
+
+func marshalInt64SliceJSON(ids []int64) string {
+	if len(ids) == 0 {
+		return "[]"
+	}
+	data, err := json.Marshal(ids)
+	if err != nil {
+		return "[]"
+	}
+	return string(data)
+}
+
+func unmarshalInt64SliceJSON(raw string) []int64 {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var ids []int64
+	if err := json.Unmarshal([]byte(raw), &ids); err != nil {
+		return nil
+	}
+	return ids
 }

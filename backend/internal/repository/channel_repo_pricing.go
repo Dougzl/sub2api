@@ -57,7 +57,7 @@ func (r *channelRepository) UpdateModelPricing(ctx context.Context, pricing *ser
 	}
 	result, err := r.db.ExecContext(ctx,
 		`UPDATE channel_model_pricing
-		 SET models = $1, billing_mode = $2, input_price = $3, output_price = $4, cache_write_price = $5, cache_read_price = $6, image_output_price = $7, per_request_price = $8, platform = $9, updated_at = NOW()
+		 SET models = $1, billing_mode = $2, input_price = $3, output_price = $4, cache_write_price = $5, cache_read_price = $6, image_output_price = $7, per_request_price = $8, platform = $9, updated_at = CURRENT_TIMESTAMP
 		 WHERE id = $10`,
 		modelsJSON, billingMode, pricing.InputPrice, pricing.OutputPrice, pricing.CacheWritePrice, pricing.CacheReadPrice,
 		pricing.ImageOutputPrice, pricing.PerRequestPrice, pricing.Platform, pricing.ID,
@@ -215,10 +215,26 @@ type dbExec interface {
 }
 
 func setGroupIDsTx(ctx context.Context, exec dbExec, channelID int64, groupIDs []int64) error {
-	if _, err := exec.ExecContext(ctx, `DELETE FROM channel_groups WHERE channel_id = $1`, channelID); err != nil {
+	deleteQuery := `DELETE FROM channel_groups WHERE channel_id = $1`
+	deleteArgs := []any{channelID}
+	if isSQLiteStorage() {
+		deleteQuery = `DELETE FROM channel_groups WHERE channel_id = ?`
+	}
+	if _, err := exec.ExecContext(ctx, deleteQuery, deleteArgs...); err != nil {
 		return fmt.Errorf("delete old group associations: %w", err)
 	}
 	if len(groupIDs) == 0 {
+		return nil
+	}
+	if isSQLiteStorage() {
+		for _, groupID := range groupIDs {
+			if _, err := exec.ExecContext(ctx,
+				`INSERT INTO channel_groups (channel_id, group_id) VALUES (?, ?)`,
+				channelID, groupID,
+			); err != nil {
+				return fmt.Errorf("insert group associations: %w", err)
+			}
+		}
 		return nil
 	}
 	_, err := exec.ExecContext(ctx,
