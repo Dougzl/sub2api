@@ -4,6 +4,7 @@
 package timezone
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"time"
@@ -15,6 +16,8 @@ var (
 	// tzName stores the timezone name for logging/debugging
 	tzName string
 )
+
+type contextLocationKey struct{}
 
 // Init initializes the global timezone setting.
 // This should be called once at application startup.
@@ -158,4 +161,27 @@ func StartOfDayInUserLocation(t time.Time, userTZ string) time.Time {
 	}
 	t = t.In(loc)
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
+}
+
+// WithUserLocation stores a resolved user timezone location into context.
+// If userTZ is empty or invalid, the original context is returned unchanged.
+func WithUserLocation(ctx context.Context, userTZ string) context.Context {
+	if userTZ == "" {
+		return ctx
+	}
+	userLoc, err := time.LoadLocation(userTZ)
+	if err != nil {
+		return ctx
+	}
+	return context.WithValue(ctx, contextLocationKey{}, userLoc)
+}
+
+// LocationFromContext returns the request-scoped location if present, otherwise the global configured location.
+func LocationFromContext(ctx context.Context) *time.Location {
+	if ctx != nil {
+		if loc, ok := ctx.Value(contextLocationKey{}).(*time.Location); ok && loc != nil {
+			return loc
+		}
+	}
+	return Location()
 }

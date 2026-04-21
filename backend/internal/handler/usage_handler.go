@@ -325,10 +325,11 @@ func (h *UsageHandler) DashboardTrend(c *gin.Context) {
 		return
 	}
 
+	ctx := timezone.WithUserLocation(c.Request.Context(), c.Query("timezone"))
 	startTime, endTime := parseUserTimeRange(c)
 	granularity := c.DefaultQuery("granularity", "day")
 
-	trend, err := h.usageService.GetUserUsageTrendByUserID(c.Request.Context(), subject.UserID, startTime, endTime, granularity)
+	trend, err := h.usageService.GetUserUsageTrendByUserID(ctx, subject.UserID, startTime, endTime, granularity)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return

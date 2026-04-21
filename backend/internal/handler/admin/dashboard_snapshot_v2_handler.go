@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -68,6 +69,7 @@ type dashboardSnapshotV2CacheKey struct {
 }
 
 func (h *DashboardHandler) GetSnapshotV2(c *gin.Context) {
+	ctx := timezone.WithUserLocation(c.Request.Context(), c.Query("timezone"))
 	startTime, endTime := parseTimeRange(c)
 	granularity := strings.TrimSpace(c.DefaultQuery("granularity", "day"))
 	if granularity != "hour" {
@@ -115,7 +117,7 @@ func (h *DashboardHandler) GetSnapshotV2(c *gin.Context) {
 
 	cached, hit, err := dashboardSnapshotV2Cache.GetOrLoad(cacheKey, func() (any, error) {
 		return h.buildSnapshotV2Response(
-			c.Request.Context(),
+			ctx,
 			startTime,
 			endTime,
 			granularity,
