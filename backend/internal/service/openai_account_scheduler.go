@@ -19,6 +19,7 @@ const (
 	openAIAccountScheduleLayerPreviousResponse = "previous_response_id"
 	openAIAccountScheduleLayerSessionSticky    = "session_hash"
 	openAIAccountScheduleLayerLoadBalance      = "load_balance"
+	openAINearestRecoveryPoolSize              = 5
 )
 
 type OpenAIAccountScheduleRequest struct {
@@ -207,9 +208,10 @@ func (s *openAIAccountRuntimeStats) size() int {
 }
 
 type defaultOpenAIAccountScheduler struct {
-	service *OpenAIGatewayService
-	metrics openAIAccountSchedulerMetrics
-	stats   *openAIAccountRuntimeStats
+	service  *OpenAIGatewayService
+	metrics  openAIAccountSchedulerMetrics
+	stats    *openAIAccountRuntimeStats
+	rrCursor atomic.Uint64
 }
 
 func newDefaultOpenAIAccountScheduler(service *OpenAIGatewayService, stats *openAIAccountRuntimeStats) OpenAIAccountScheduler {
@@ -336,6 +338,10 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, nil
 	}
+	if account.SchedulingRecoveryAt(req.RequestedModel) != nil {
+		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
+		return nil, nil
+	}
 
 	result, acquireErr := s.service.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
 	if acquireErr == nil && result.Acquired {
@@ -452,6 +458,72 @@ func selectTopKOpenAICandidates(candidates []openAIAccountCandidateScore, topK i
 		return isOpenAIAccountCandidateBetter(ranked[i], ranked[j])
 	})
 	return ranked
+}
+
+func openAIAccountCandidateSchedulingLess(left, right openAIAccountCandidateScore, requestedModel string) bool {
+	if recoveryCmp := compareSchedulingRecoveryTime(left.account.SchedulingRecoveryAt(requestedModel), right.account.SchedulingRecoveryAt(requestedModel)); recoveryCmp != 0 {
+		return recoveryCmp < 0
+	}
+	if left.score != right.score {
+		return left.score > right.score
+	}
+	if left.account.Priority != right.account.Priority {
+		return left.account.Priority < right.account.Priority
+	}
+	if left.loadInfo.LoadRate != right.loadInfo.LoadRate {
+		return left.loadInfo.LoadRate < right.loadInfo.LoadRate
+	}
+	if left.loadInfo.WaitingCount != right.loadInfo.WaitingCount {
+		return left.loadInfo.WaitingCount < right.loadInfo.WaitingCount
+	}
+	if lastUsedCmp := compareLastUsedForScheduling(left.account.LastUsedAt, right.account.LastUsedAt); lastUsedCmp != 0 {
+		return lastUsedCmp < 0
+	}
+	return left.account.ID < right.account.ID
+}
+
+func selectNearestRecoveryCandidates(candidates []openAIAccountCandidateScore, limit int, requestedModel string) []openAIAccountCandidateScore {
+	if len(candidates) == 0 {
+		return nil
+	}
+	ranked := append([]openAIAccountCandidateScore(nil), candidates...)
+	sort.SliceStable(ranked, func(i, j int) bool {
+		return openAIAccountCandidateSchedulingLess(ranked[i], ranked[j], requestedModel)
+	})
+	if limit <= 0 || limit >= len(ranked) {
+		return ranked
+	}
+	return append([]openAIAccountCandidateScore(nil), ranked[:limit]...)
+}
+
+func rotateOpenAICandidateOrder(candidates []openAIAccountCandidateScore, requestedModel string, start int) []openAIAccountCandidateScore {
+	if len(candidates) <= 1 {
+		return append([]openAIAccountCandidateScore(nil), candidates...)
+	}
+
+	ordered := append([]openAIAccountCandidateScore(nil), candidates...)
+	i := 0
+	for i < len(ordered) {
+		j := i + 1
+		for j < len(ordered) && compareSchedulingRecoveryTime(
+			ordered[i].account.SchedulingRecoveryAt(requestedModel),
+			ordered[j].account.SchedulingRecoveryAt(requestedModel),
+		) == 0 {
+			j++
+		}
+
+		groupLen := j - i
+		if groupLen > 1 {
+			offset := start % groupLen
+			if offset < 0 {
+				offset += groupLen
+			}
+			group := append([]openAIAccountCandidateScore(nil), ordered[i:j]...)
+			copy(ordered[i:j], append(group[offset:], group[:offset]...))
+		}
+		i = j
+	}
+	return ordered
 }
 
 type openAISelectionRNG struct {
@@ -693,15 +765,13 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			weights.TTFT*ttftFactor
 	}
 
-	topK := s.service.openAIWSLBTopK()
-	if topK > len(candidates) {
-		topK = len(candidates)
-	}
+	nearestPool := selectNearestRecoveryCandidates(candidates, openAINearestRecoveryPoolSize, req.RequestedModel)
+	topK := len(nearestPool)
 	if topK <= 0 {
 		topK = 1
 	}
-	rankedCandidates := selectTopKOpenAICandidates(candidates, topK)
-	selectionOrder := buildOpenAIWeightedSelectionOrder(rankedCandidates, req)
+	startIdx := int((s.rrCursor.Add(1) - 1) % uint64(topK))
+	selectionOrder := rotateOpenAICandidateOrder(nearestPool, req.RequestedModel, startIdx)
 
 	for i := 0; i < len(selectionOrder); i++ {
 		candidate := selectionOrder[i]

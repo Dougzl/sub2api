@@ -676,6 +676,107 @@ func TestSelectTopKOpenAICandidates(t *testing.T) {
 	require.Equal(t, int64(14), topAll[3].account.ID)
 }
 
+func TestSelectNearestRecoveryCandidates_LimitsToNearestFive(t *testing.T) {
+	now := time.Now().UTC()
+	candidates := make([]openAIAccountCandidateScore, 0, 6)
+	for i, hours := range []int{0, 1, 2, 24, 48, 24 * 6} {
+		account := &Account{ID: int64(100 + i), Priority: 0}
+		if hours > 0 {
+			account.Extra = map[string]any{
+				"codex_usage_updated_at":       now.Format(time.RFC3339),
+				"codex_7d_reset_after_seconds": hours * 3600,
+			}
+		}
+		candidates = append(candidates, openAIAccountCandidateScore{
+			account:  account,
+			loadInfo: &AccountLoadInfo{LoadRate: i, WaitingCount: 0},
+			score:    float64(100 - i),
+		})
+	}
+
+	pool := selectNearestRecoveryCandidates(candidates, 5, "")
+	require.Len(t, pool, 5)
+	ids := make([]int64, 0, len(pool))
+	for _, item := range pool {
+		ids = append(ids, item.account.ID)
+	}
+	require.Equal(t, []int64{100, 101, 102, 103, 104}, ids)
+}
+
+func TestRotateOpenAICandidateOrder_RoundRobin(t *testing.T) {
+	now := time.Now().UTC()
+	candidates := []openAIAccountCandidateScore{
+		{account: &Account{ID: 1}},
+		{account: &Account{ID: 2}},
+		{
+			account: &Account{
+				ID: 3,
+				Extra: map[string]any{
+					"codex_usage_updated_at":       now.Format(time.RFC3339),
+					"codex_7d_reset_after_seconds": 3600,
+				},
+			},
+		},
+		{
+			account: &Account{
+				ID: 4,
+				Extra: map[string]any{
+					"codex_usage_updated_at":       now.Format(time.RFC3339),
+					"codex_7d_reset_after_seconds": 3600,
+				},
+			},
+		},
+		{
+			account: &Account{
+				ID: 5,
+				Extra: map[string]any{
+					"codex_usage_updated_at":       now.Format(time.RFC3339),
+					"codex_7d_reset_after_seconds": 24 * 3600,
+				},
+			},
+		},
+	}
+
+	rotated := rotateOpenAICandidateOrder(candidates, "", 1)
+	ids := make([]int64, 0, len(rotated))
+	for _, item := range rotated {
+		ids = append(ids, item.account.ID)
+	}
+	require.Equal(t, []int64{2, 1, 4, 3, 5}, ids)
+}
+
+func TestRotateOpenAICandidateOrder_DoesNotPromoteLongestRecoveryToFront(t *testing.T) {
+	now := time.Now().UTC()
+	candidates := []openAIAccountCandidateScore{
+		{account: &Account{ID: 1}},
+		{
+			account: &Account{
+				ID: 2,
+				Extra: map[string]any{
+					"codex_usage_updated_at":       now.Format(time.RFC3339),
+					"codex_7d_reset_after_seconds": 3600,
+				},
+			},
+		},
+		{
+			account: &Account{
+				ID: 3,
+				Extra: map[string]any{
+					"codex_usage_updated_at":       now.Format(time.RFC3339),
+					"codex_7d_reset_after_seconds": 6 * 24 * 3600,
+				},
+			},
+		},
+	}
+
+	rotated := rotateOpenAICandidateOrder(candidates, "", 2)
+	ids := make([]int64, 0, len(rotated))
+	for _, item := range rotated {
+		ids = append(ids, item.account.ID)
+	}
+	require.Equal(t, []int64{1, 2, 3}, ids, "恢复最晚的账号不应因轮询被旋转到前面")
+}
+
 func TestBuildOpenAIWeightedSelectionOrder_DeterministicBySessionSeed(t *testing.T) {
 	candidates := []openAIAccountCandidateScore{
 		{

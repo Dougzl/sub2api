@@ -1694,7 +1694,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 	loadMap, err := s.concurrencyService.GetAccountsLoadBatch(ctx, accountLoads)
 	if err != nil {
-		if result, ok, legacyErr := s.tryAcquireByLegacyOrder(ctx, candidates, groupID, sessionHash, preferOAuth); legacyErr != nil {
+		if result, ok, legacyErr := s.tryAcquireByLegacyOrder(ctx, candidates, groupID, sessionHash, requestedModel, preferOAuth); legacyErr != nil {
 			return nil, legacyErr
 		} else if ok {
 			return result, nil
@@ -1752,7 +1752,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	}
 
 	// ============ Layer 3: 兜底排队 ============
-	s.sortCandidatesForFallback(candidates, preferOAuth, cfg.FallbackSelectionMode)
+	s.sortCandidatesForFallback(candidates, requestedModel, preferOAuth, cfg.FallbackSelectionMode)
 	for _, acc := range candidates {
 		// 会话数量限制检查（等待计划也需要占用会话配额）
 		if !s.checkAndRegisterSession(ctx, acc, sessionHash) {
@@ -1768,9 +1768,9 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	return nil, ErrNoAvailableAccounts
 }
 
-func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates []*Account, groupID *int64, sessionHash string, preferOAuth bool) (*AccountSelectionResult, bool, error) {
+func (s *GatewayService) tryAcquireByLegacyOrder(ctx context.Context, candidates []*Account, groupID *int64, sessionHash string, requestedModel string, preferOAuth bool) (*AccountSelectionResult, bool, error) {
 	ordered := append([]*Account(nil), candidates...)
-	sortAccountsByPriorityAndLastUsed(ordered, preferOAuth)
+	sortAccountsByPriorityAndLastUsed(ordered, requestedModel, preferOAuth)
 
 	for _, acc := range ordered {
 		result, err := s.tryAcquireAccountSlot(ctx, acc.ID, acc.Concurrency)
@@ -2533,25 +2533,97 @@ func selectByLRU(accounts []accountWithLoad, preferOAuth bool) *accountWithLoad 
 	return &accounts[selectedIdx]
 }
 
-func sortAccountsByPriorityAndLastUsed(accounts []*Account, preferOAuth bool) {
+func compareSchedulingRecoveryTime(a, b *time.Time) int {
+	switch {
+	case a == nil && b == nil:
+		return 0
+	case a == nil:
+		return -1
+	case b == nil:
+		return 1
+	case a.Before(*b):
+		return -1
+	case a.After(*b):
+		return 1
+	default:
+		return 0
+	}
+}
+
+func compareLastUsedForScheduling(a, b *time.Time) int {
+	switch {
+	case a == nil && b == nil:
+		return 0
+	case a == nil:
+		return -1
+	case b == nil:
+		return 1
+	case a.Before(*b):
+		return -1
+	case a.After(*b):
+		return 1
+	default:
+		return 0
+	}
+}
+
+func accountSchedulingLess(a, b *Account, requestedModel string, preferOAuth bool) bool {
+	if a == nil || b == nil {
+		return a != nil
+	}
+	if a.Priority != b.Priority {
+		return a.Priority < b.Priority
+	}
+	if recoveryCmp := compareSchedulingRecoveryTime(a.SchedulingRecoveryAt(requestedModel), b.SchedulingRecoveryAt(requestedModel)); recoveryCmp != 0 {
+		return recoveryCmp < 0
+	}
+	if preferOAuth && a.Type != b.Type {
+		return a.Type == AccountTypeOAuth
+	}
+	if lastUsedCmp := compareLastUsedForScheduling(a.LastUsedAt, b.LastUsedAt); lastUsedCmp != 0 {
+		return lastUsedCmp < 0
+	}
+	return a.ID < b.ID
+}
+
+func accountWithLoadSchedulingLess(a, b accountWithLoad, requestedModel string, preferOAuth bool) bool {
+	if a.account == nil || b.account == nil {
+		return a.account != nil
+	}
+	if a.account.Priority != b.account.Priority {
+		return a.account.Priority < b.account.Priority
+	}
+	if a.loadInfo != nil && b.loadInfo != nil && a.loadInfo.LoadRate != b.loadInfo.LoadRate {
+		return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+	}
+	if recoveryCmp := compareSchedulingRecoveryTime(a.account.SchedulingRecoveryAt(requestedModel), b.account.SchedulingRecoveryAt(requestedModel)); recoveryCmp != 0 {
+		return recoveryCmp < 0
+	}
+	if preferOAuth && a.account.Type != b.account.Type {
+		return a.account.Type == AccountTypeOAuth
+	}
+	if lastUsedCmp := compareLastUsedForScheduling(a.account.LastUsedAt, b.account.LastUsedAt); lastUsedCmp != 0 {
+		return lastUsedCmp < 0
+	}
+	return a.account.ID < b.account.ID
+}
+
+func selectByRecoveryOrder(accounts []accountWithLoad, requestedModel string, preferOAuth bool) *accountWithLoad {
+	if len(accounts) == 0 {
+		return nil
+	}
+	best := &accounts[0]
+	for i := 1; i < len(accounts); i++ {
+		if accountWithLoadSchedulingLess(accounts[i], *best, requestedModel, preferOAuth) {
+			best = &accounts[i]
+		}
+	}
+	return best
+}
+
+func sortAccountsByPriorityAndLastUsed(accounts []*Account, requestedModel string, preferOAuth bool) {
 	sort.SliceStable(accounts, func(i, j int) bool {
-		a, b := accounts[i], accounts[j]
-		if a.Priority != b.Priority {
-			return a.Priority < b.Priority
-		}
-		switch {
-		case a.LastUsedAt == nil && b.LastUsedAt != nil:
-			return true
-		case a.LastUsedAt != nil && b.LastUsedAt == nil:
-			return false
-		case a.LastUsedAt == nil && b.LastUsedAt == nil:
-			if preferOAuth && a.Type != b.Type {
-				return a.Type == AccountTypeOAuth
-			}
-			return false
-		default:
-			return a.LastUsedAt.Before(*b.LastUsedAt)
-		}
+		return accountSchedulingLess(accounts[i], accounts[j], requestedModel, preferOAuth)
 	})
 	shuffleWithinPriorityAndLastUsed(accounts, preferOAuth)
 }
@@ -2655,14 +2727,14 @@ func sameLastUsedAt(a, b *time.Time) bool {
 
 // sortCandidatesForFallback 根据配置选择排序策略
 // mode: "last_used"(按最后使用时间) 或 "random"(随机)
-func (s *GatewayService) sortCandidatesForFallback(accounts []*Account, preferOAuth bool, mode string) {
+func (s *GatewayService) sortCandidatesForFallback(accounts []*Account, requestedModel string, preferOAuth bool, mode string) {
 	if mode == "random" {
 		// 先按优先级排序，然后在同优先级内随机打乱
 		sortAccountsByPriorityOnly(accounts, preferOAuth)
 		shuffleWithinPriority(accounts)
 	} else {
 		// 默认按最后使用时间排序
-		sortAccountsByPriorityAndLastUsed(accounts, preferOAuth)
+		sortAccountsByPriorityAndLastUsed(accounts, requestedModel, preferOAuth)
 	}
 }
 

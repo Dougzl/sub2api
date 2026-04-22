@@ -40,7 +40,7 @@ func TestSortAccountsByPriorityAndLastUsed_ByPriority(t *testing.T) {
 		{ID: 2, Priority: 1, LastUsedAt: testTimePtr(now)},
 		{ID: 3, Priority: 3, LastUsedAt: testTimePtr(now)},
 	}
-	sortAccountsByPriorityAndLastUsed(accounts, false)
+	sortAccountsByPriorityAndLastUsed(accounts, "", false)
 	require.Equal(t, int64(2), accounts[0].ID, "优先级最低的排第一")
 	require.Equal(t, int64(3), accounts[1].ID)
 	require.Equal(t, int64(1), accounts[2].ID)
@@ -53,7 +53,7 @@ func TestSortAccountsByPriorityAndLastUsed_SamePriorityByLastUsed(t *testing.T) 
 		{ID: 2, Priority: 1, LastUsedAt: testTimePtr(now.Add(-1 * time.Hour))},
 		{ID: 3, Priority: 1, LastUsedAt: nil},
 	}
-	sortAccountsByPriorityAndLastUsed(accounts, false)
+	sortAccountsByPriorityAndLastUsed(accounts, "", false)
 	require.Equal(t, int64(3), accounts[0].ID, "nil LastUsedAt 排最前")
 	require.Equal(t, int64(2), accounts[1].ID, "更早使用的排前面")
 	require.Equal(t, int64(1), accounts[2].ID)
@@ -64,7 +64,7 @@ func TestSortAccountsByPriorityAndLastUsed_PreferOAuth(t *testing.T) {
 		{ID: 1, Priority: 1, LastUsedAt: nil, Type: AccountTypeAPIKey},
 		{ID: 2, Priority: 1, LastUsedAt: nil, Type: AccountTypeOAuth},
 	}
-	sortAccountsByPriorityAndLastUsed(accounts, true)
+	sortAccountsByPriorityAndLastUsed(accounts, "", true)
 	require.Equal(t, int64(2), accounts[0].ID, "preferOAuth 时 OAuth 账号排前面")
 }
 
@@ -82,7 +82,7 @@ func TestSortAccountsByPriorityAndLastUsed_StableSort(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		cpy := make([]*Account, len(accounts))
 		copy(cpy, accounts)
-		sortAccountsByPriorityAndLastUsed(cpy, false)
+		sortAccountsByPriorityAndLastUsed(cpy, "", false)
 		seenFirst[cpy[0].ID] = true
 
 		ids := map[int64]bool{}
@@ -102,13 +102,67 @@ func TestSortAccountsByPriorityAndLastUsed_MixedPriorityAndTime(t *testing.T) {
 		{ID: 3, Priority: 1, LastUsedAt: testTimePtr(now.Add(-1 * time.Hour))},
 		{ID: 4, Priority: 2, LastUsedAt: testTimePtr(now.Add(-2 * time.Hour))},
 	}
-	sortAccountsByPriorityAndLastUsed(accounts, false)
+	sortAccountsByPriorityAndLastUsed(accounts, "", false)
 	// 优先级1排前：nil < earlier
 	require.Equal(t, int64(3), accounts[0].ID, "优先级1 + 更早")
 	require.Equal(t, int64(2), accounts[1].ID, "优先级1 + 现在")
 	// 优先级2排后：nil < time
 	require.Equal(t, int64(1), accounts[2].ID, "优先级2 + nil")
 	require.Equal(t, int64(4), accounts[3].ID, "优先级2 + 有时间")
+}
+
+func TestSortAccountsByPriorityAndLastUsed_PrefersEarlierSevenDayRecoveryTime(t *testing.T) {
+	now := time.Now().UTC()
+	accounts := []*Account{
+		{
+			ID:         1,
+			Priority:   1,
+			LastUsedAt: testTimePtr(now.Add(-2 * time.Hour)),
+			Extra: map[string]any{
+				"codex_usage_updated_at":       now.Format(time.RFC3339),
+				"codex_5h_reset_after_seconds": 600,
+				"codex_7d_reset_after_seconds": 6 * 24 * 3600,
+			},
+		},
+		{
+			ID:         2,
+			Priority:   1,
+			LastUsedAt: testTimePtr(now.Add(-1 * time.Hour)),
+			Extra: map[string]any{
+				"codex_usage_updated_at":       now.Format(time.RFC3339),
+				"codex_5h_reset_after_seconds": 2 * 3600,
+				"codex_7d_reset_after_seconds": 24 * 3600,
+			},
+		},
+	}
+
+	sortAccountsByPriorityAndLastUsed(accounts, "", false)
+	require.Equal(t, int64(2), accounts[0].ID, "应忽略 5h，仅按 7d 更早恢复优先")
+	require.Equal(t, int64(1), accounts[1].ID)
+}
+
+func TestSortAccountsByPriorityAndLastUsed_PrefersImmediateSchedulableAccount(t *testing.T) {
+	now := time.Now().UTC()
+	accounts := []*Account{
+		{
+			ID:         1,
+			Priority:   1,
+			LastUsedAt: testTimePtr(now.Add(-2 * time.Hour)),
+			Extra: map[string]any{
+				"codex_usage_updated_at":       now.Format(time.RFC3339),
+				"codex_7d_reset_after_seconds": 3600,
+			},
+		},
+		{
+			ID:         2,
+			Priority:   1,
+			LastUsedAt: testTimePtr(now.Add(-1 * time.Hour)),
+		},
+	}
+
+	sortAccountsByPriorityAndLastUsed(accounts, "", false)
+	require.Equal(t, int64(2), accounts[0].ID, "nil recovery 表示立即可用，应优先")
+	require.Equal(t, int64(1), accounts[1].ID)
 }
 
 // --- filterByMinPriority ---

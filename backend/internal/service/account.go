@@ -4,6 +4,7 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"hash/fnv"
 	"log/slog"
 	"reflect"
@@ -2048,4 +2049,54 @@ func parseExtraInt(value any) int {
 		}
 	}
 	return 0
+}
+
+func (a *Account) codexSchedulingResetAt(extraKey string) *time.Time {
+	if a == nil || a.Extra == nil || strings.TrimSpace(extraKey) == "" {
+		return nil
+	}
+
+	resetAfterSeconds := parseExtraInt(a.Extra[extraKey])
+	if resetAfterSeconds <= 0 {
+		return nil
+	}
+
+	base := time.Now().UTC()
+	if updatedAtRaw, ok := a.Extra["codex_usage_updated_at"]; ok {
+		if updatedAt, err := parseTime(strings.TrimSpace(fmt.Sprint(updatedAtRaw))); err == nil {
+			base = updatedAt
+		}
+	}
+
+	resetAt := base.Add(time.Duration(resetAfterSeconds) * time.Second)
+	if !resetAt.After(time.Now()) {
+		return nil
+	}
+	return &resetAt
+}
+
+func (a *Account) SchedulingRecoveryAt(requestedModel string) *time.Time {
+	if a == nil {
+		return nil
+	}
+
+	now := time.Now()
+	var earliest *time.Time
+	consider := func(candidate *time.Time) {
+		if candidate == nil || !candidate.After(now) {
+			return
+		}
+		if earliest == nil || candidate.Before(*earliest) {
+			clone := *candidate
+			earliest = &clone
+		}
+	}
+
+	consider(a.RateLimitResetAt)
+	consider(a.OverloadUntil)
+	consider(a.TempUnschedulableUntil)
+	consider(a.modelRateLimitResetAt(strings.TrimSpace(a.GetMappedModel(requestedModel))))
+	consider(a.codexSchedulingResetAt("codex_7d_reset_after_seconds"))
+
+	return earliest
 }
