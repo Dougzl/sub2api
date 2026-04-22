@@ -165,6 +165,35 @@ func TestSortAccountsByPriorityAndLastUsed_PrefersImmediateSchedulableAccount(t 
 	require.Equal(t, int64(1), accounts[1].ID)
 }
 
+func TestSortAccountsByPriorityAndLastUsed_PrefersLocalStatsOnlyLikeNil(t *testing.T) {
+	now := time.Now().UTC()
+	accounts := []*Account{
+		{
+			ID:         1,
+			Priority:   1,
+			Platform:   PlatformOpenAI,
+			Type:       AccountTypeOAuth,
+			LastUsedAt: testTimePtr(now.Add(-2 * time.Hour)),
+			Extra: map[string]any{
+				"codex_usage_updated_at":       now.Format(time.RFC3339),
+				"codex_7d_reset_after_seconds": 6 * 24 * 3600,
+			},
+		},
+		{
+			ID:         2,
+			Priority:   1,
+			Platform:   PlatformOpenAI,
+			Type:       AccountTypeOAuth,
+			LastUsedAt: testTimePtr(now.Add(-1 * time.Hour)),
+			Extra:      map[string]any{},
+		},
+	}
+
+	sortAccountsByPriorityAndLastUsed(accounts, "", false)
+	require.Equal(t, int64(2), accounts[0].ID, "local_stats_only/无7d快照应与 nil 一样优先")
+	require.Equal(t, int64(1), accounts[1].ID)
+}
+
 // --- filterByMinPriority ---
 
 func TestFilterByMinPriority_Empty(t *testing.T) {

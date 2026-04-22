@@ -2574,6 +2574,9 @@ func accountSchedulingLess(a, b *Account, requestedModel string, preferOAuth boo
 	if a.Priority != b.Priority {
 		return a.Priority < b.Priority
 	}
+	if a.IsLocalStatsOnlySchedulingPriority() != b.IsLocalStatsOnlySchedulingPriority() {
+		return a.IsLocalStatsOnlySchedulingPriority()
+	}
 	if recoveryCmp := compareSchedulingRecoveryTime(a.SchedulingRecoveryAt(requestedModel), b.SchedulingRecoveryAt(requestedModel)); recoveryCmp != 0 {
 		return recoveryCmp < 0
 	}
@@ -2595,6 +2598,9 @@ func accountWithLoadSchedulingLess(a, b accountWithLoad, requestedModel string, 
 	}
 	if a.loadInfo != nil && b.loadInfo != nil && a.loadInfo.LoadRate != b.loadInfo.LoadRate {
 		return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+	}
+	if a.account.IsLocalStatsOnlySchedulingPriority() != b.account.IsLocalStatsOnlySchedulingPriority() {
+		return a.account.IsLocalStatsOnlySchedulingPriority()
 	}
 	if recoveryCmp := compareSchedulingRecoveryTime(a.account.SchedulingRecoveryAt(requestedModel), b.account.SchedulingRecoveryAt(requestedModel)); recoveryCmp != 0 {
 		return recoveryCmp < 0

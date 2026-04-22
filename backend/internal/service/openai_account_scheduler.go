@@ -461,6 +461,9 @@ func selectTopKOpenAICandidates(candidates []openAIAccountCandidateScore, topK i
 }
 
 func openAIAccountCandidateSchedulingLess(left, right openAIAccountCandidateScore, requestedModel string) bool {
+	if left.account.IsLocalStatsOnlySchedulingPriority() != right.account.IsLocalStatsOnlySchedulingPriority() {
+		return left.account.IsLocalStatsOnlySchedulingPriority()
+	}
 	if recoveryCmp := compareSchedulingRecoveryTime(left.account.SchedulingRecoveryAt(requestedModel), right.account.SchedulingRecoveryAt(requestedModel)); recoveryCmp != 0 {
 		return recoveryCmp < 0
 	}

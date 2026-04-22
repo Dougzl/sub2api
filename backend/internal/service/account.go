@@ -2100,3 +2100,23 @@ func (a *Account) SchedulingRecoveryAt(requestedModel string) *time.Time {
 
 	return earliest
 }
+
+func (a *Account) HasCodexSevenDayReset() bool {
+	if a == nil || a.Extra == nil {
+		return false
+	}
+	if raw, ok := a.Extra["codex_7d_reset_at"]; ok && strings.TrimSpace(fmt.Sprint(raw)) != "" {
+		return true
+	}
+	return parseExtraInt(a.Extra["codex_7d_reset_after_seconds"]) > 0
+}
+
+func (a *Account) IsLocalStatsOnlySchedulingPriority() bool {
+	if a == nil {
+		return false
+	}
+	if !a.IsOpenAIOAuth() {
+		return false
+	}
+	return !a.HasCodexSevenDayReset()
+}
