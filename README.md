@@ -4,8 +4,8 @@
 
 [![Go](https://img.shields.io/badge/Go-1.25.7-00ADD8.svg)](https://golang.org/)
 [![Vue](https://img.shields.io/badge/Vue-3.4+-4FC08D.svg)](https://vuejs.org/)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-336791.svg)](https://www.postgresql.org/)
-[![Redis](https://img.shields.io/badge/Redis-7+-DC382D.svg)](https://redis.io/)
+[![SQLite](https://img.shields.io/badge/SQLite-3+-003B57.svg)](https://www.sqlite.org/)
+[![Windows](https://img.shields.io/badge/Windows-Supported-0078D6.svg)](https://www.microsoft.com/windows)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
 
 <a href="https://trendshift.io/repositories/21823" target="_blank"><img src="https://trendshift.io/api/badge/repositories/21823" alt="Wei-Shaw%2Fsub2api | Trendshift" width="250" height="55"/></a>
@@ -33,6 +33,8 @@ Demo credentials (shared demo environment; **not** created automatically for sel
 ## Overview
 
 Sub2API is an AI API gateway platform designed to distribute and manage API quotas from AI product subscriptions. Users can access upstream AI services through platform-generated API Keys, while the platform handles authentication, billing, load balancing, and request forwarding.
+
+> **Default deployment mode (current):** Sub2API now uses **embedded SQLite3** by default, with data stored locally and no PostgreSQL/Redis required for single-node startup. This makes it possible to start directly on **Windows** using the released binary.
 
 ## Features
 
@@ -113,8 +115,8 @@ Community projects that extend or integrate with Sub2API:
 |-----------|------------|
 | Backend | Go 1.25.7, Gin, Ent |
 | Frontend | Vue 3.4+, Vite 5+, TailwindCSS |
-| Database | PostgreSQL 15+ |
-| Cache/Queue | Redis 7+ |
+| Database | SQLite3 (embedded, default) |
+| Cache/Queue | Built-in single-node mode by default; Redis optional in some deployments |
 
 ---
 
@@ -132,6 +134,35 @@ Nginx drops headers containing underscores by default (e.g. `session_id`), which
 
 ## Deployment
 
+### Quick Start: Windows / Standalone Binary
+
+If you just want to run Sub2API locally or on a single Windows machine, you can now use the release binary directly.
+
+#### Steps
+
+1. Download the Windows release package from GitHub Releases
+2. Extract it to any directory, for example `D:\sub2api`
+3. Start `sub2api.exe`
+4. Open `http://127.0.0.1:8080`
+
+#### Default data location
+
+- Database file: `./data/sub2api.db`
+- Log file: `./data/logs/sub2api.log`
+
+These paths are created relative to the executable by default, so the extracted folder can be used as a self-contained deployment directory.
+
+#### Optional environment overrides
+
+```powershell
+$env:DATABASE_ENGINE="sqlite"
+$env:DATABASE_DBNAME="D:\sub2api\data\sub2api.db"
+$env:REDIS_ENABLED="false"
+.\sub2api.exe
+```
+
+---
+
 ### Method 1: Script Installation (Recommended)
 
 One-click installation script that downloads pre-built binaries from GitHub Releases.
@@ -139,8 +170,6 @@ One-click installation script that downloads pre-built binaries from GitHub Rele
 #### Prerequisites
 
 - Linux server (amd64 or arm64)
-- PostgreSQL 15+ (installed and running)
-- Redis 7+ (installed and running)
 - Root privileges
 
 #### Installation Steps
@@ -170,8 +199,7 @@ sudo systemctl enable sub2api
 ```
 
 The Setup Wizard will guide you through:
-- Database configuration
-- Redis configuration
+- SQLite database path confirmation
 - Admin account creation
 
 #### Upgrade
@@ -203,7 +231,7 @@ curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install
 
 ### Method 2: Docker Compose (Recommended)
 
-Deploy with Docker Compose, including PostgreSQL and Redis containers.
+Deploy with Docker Compose. This mode is still available if you prefer containerized dependencies and multi-service orchestration.
 
 #### Prerequisites
 
@@ -373,8 +401,6 @@ Build and run from source code for development or customization.
 
 - Go 1.21+
 - Node.js 18+
-- PostgreSQL 15+
-- Redis 7+
 
 #### Build Steps
 
@@ -414,16 +440,12 @@ server:
   mode: "release"
 
 database:
-  host: "localhost"
-  port: 5432
-  user: "postgres"
-  password: "your_password"
-  dbname: "sub2api"
+  engine: "sqlite"
+  dbname: "./data/sub2api.db"
+  sslmode: "disable"
 
 redis:
-  host: "localhost"
-  port: 6379
-  password: ""
+  enabled: false
 
 jwt:
   secret: "change-this-to-a-secure-random-string"
@@ -511,6 +533,8 @@ go run ./cmd/server
 cd frontend
 pnpm run dev
 ```
+
+> **Note:** When no database engine is specified, the application defaults to `sqlite`, and the default database file is placed under the runtime `data/` directory.
 
 #### Code Generation
 
