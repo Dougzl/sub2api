@@ -116,7 +116,7 @@ INSERT INTO ops_alert_rules (
   created_at,
   updated_at
 ) VALUES (
-  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW(),NOW()
+  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP
 )
 RETURNING
   id,
@@ -220,7 +220,7 @@ SET
   cooldown_minutes = $11,
   notify_email = $12,
   filters = $13,
-  updated_at = NOW()
+  updated_at = CURRENT_TIMESTAMP
 WHERE id = $1
 RETURNING
   id,
@@ -556,7 +556,7 @@ INSERT INTO ops_alert_events (
   email_sent,
   created_at
 ) VALUES (
-  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW()
+  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,CURRENT_TIMESTAMP
 )
 RETURNING
   id,
@@ -657,7 +657,7 @@ INSERT INTO ops_alert_silences (
   created_by,
   created_at
 ) VALUES (
-  $1,$2,$3,$4,$5,$6,$7,NOW()
+  $1,$2,$3,$4,$5,$6,$7,CURRENT_TIMESTAMP
 )
 RETURNING id, rule_id, platform, group_id, region, until, COALESCE(reason,''), created_by, created_at`
 
@@ -720,6 +720,28 @@ func (r *opsRepository) IsAlertSilenced(ctx context.Context, ruleID int64, platf
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
+	}
+
+	if isSQLiteStorage() {
+		q := `
+SELECT 1
+FROM ops_alert_silences
+WHERE rule_id = $1
+  AND platform = $2
+  AND ((group_id = $3) OR (group_id IS NULL AND $4 IS NULL))
+  AND ((region = $5) OR (region IS NULL AND $6 IS NULL))
+  AND until > $7
+LIMIT 1`
+
+		var dummy int
+		err := r.db.QueryRowContext(ctx, q, ruleID, platform, opsNullInt64(groupID), opsNullInt64(groupID), opsNullString(region), opsNullString(region), now).Scan(&dummy)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return false, nil
+			}
+			return false, err
+		}
+		return true, nil
 	}
 
 	q := `

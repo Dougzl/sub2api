@@ -795,6 +795,9 @@ FROM usage_logs ul
 }
 
 func (r *opsRepository) queryUsageLatency(ctx context.Context, filter *service.OpsDashboardFilter, start, end time.Time) (duration service.OpsPercentiles, ttft service.OpsPercentiles, err error) {
+	if isSQLiteStorage() {
+		return service.OpsPercentiles{}, service.OpsPercentiles{}, nil
+	}
 	join, where, args, _ := buildUsageWhere(filter, start, end, 1)
 	q := `
 SELECT
@@ -861,6 +864,31 @@ func (r *opsRepository) queryErrorCounts(ctx context.Context, filter *service.Op
 ) {
 	where, args, _ := buildErrorWhere(filter, start, end, 1)
 
+	if isSQLiteStorage() {
+		q := `
+SELECT
+  COALESCE(SUM(CASE WHEN COALESCE(status_code, 0) >= 400 THEN 1 ELSE 0 END), 0) AS error_total,
+  COALESCE(SUM(CASE WHEN COALESCE(status_code, 0) >= 400 AND is_business_limited THEN 1 ELSE 0 END), 0) AS business_limited,
+  COALESCE(SUM(CASE WHEN COALESCE(status_code, 0) >= 400 AND NOT is_business_limited THEN 1 ELSE 0 END), 0) AS error_sla,
+  COALESCE(SUM(CASE WHEN error_owner = 'provider' AND NOT is_business_limited AND COALESCE(upstream_status_code, status_code, 0) NOT IN (429, 529) THEN 1 ELSE 0 END), 0) AS upstream_excl,
+  COALESCE(SUM(CASE WHEN error_owner = 'provider' AND NOT is_business_limited AND COALESCE(upstream_status_code, status_code, 0) = 429 THEN 1 ELSE 0 END), 0) AS upstream_429,
+  COALESCE(SUM(CASE WHEN error_owner = 'provider' AND NOT is_business_limited AND COALESCE(upstream_status_code, status_code, 0) = 529 THEN 1 ELSE 0 END), 0) AS upstream_529
+FROM ops_error_logs
+` + where
+
+		if err := r.db.QueryRowContext(ctx, q, args...).Scan(
+			&errorTotal,
+			&businessLimited,
+			&errorCountSLA,
+			&upstreamExcl429529,
+			&upstream429,
+			&upstream529,
+		); err != nil {
+			return 0, 0, 0, 0, 0, 0, err
+		}
+		return errorTotal, businessLimited, errorCountSLA, upstreamExcl429529, upstream429, upstream529, nil
+	}
+
 	q := `
 SELECT
   COALESCE(COUNT(*) FILTER (WHERE COALESCE(status_code, 0) >= 400), 0) AS error_total,
@@ -903,6 +931,9 @@ func (r *opsRepository) queryCurrentRates(ctx context.Context, filter *service.O
 }
 
 func (r *opsRepository) queryPeakRates(ctx context.Context, filter *service.OpsDashboardFilter, start, end time.Time) (qpsPeak float64, tpsPeak float64, err error) {
+	if isSQLiteStorage() {
+		return 0, 0, nil
+	}
 	usageJoin, usageWhere, usageArgs, next := buildUsageWhere(filter, start, end, 1)
 	errorWhere, errorArgs, _ := buildErrorWhere(filter, start, end, next)
 

@@ -508,6 +508,30 @@ func (r *apiKeyRepository) IncrementQuotaUsed(ctx context.Context, id int64, amo
 // IncrementQuotaUsedAndGetState atomically increments quota_used, conditionally marks the key
 // as quota_exhausted, and returns the latest quota state in one round trip.
 func (r *apiKeyRepository) IncrementQuotaUsedAndGetState(ctx context.Context, id int64, amount float64) (*service.APIKeyQuotaUsageState, error) {
+	if isSQLiteStorage() && r.sql != nil {
+		query := `
+			UPDATE api_keys
+			SET
+				quota_used = quota_used + ?,
+				status = CASE
+					WHEN quota > 0 AND quota_used + ? >= quota THEN ?
+					ELSE status
+				END,
+				updated_at = CURRENT_TIMESTAMP
+			WHERE id = ? AND deleted_at IS NULL
+			RETURNING quota_used, quota, key, status
+		`
+
+		state := &service.APIKeyQuotaUsageState{}
+		if err := scanSingleRow(ctx, r.sql, query, []any{amount, amount, service.StatusAPIKeyQuotaExhausted, id}, &state.QuotaUsed, &state.Quota, &state.Key, &state.Status); err != nil {
+			if err == sql.ErrNoRows {
+				return nil, service.ErrAPIKeyNotFound
+			}
+			return nil, err
+		}
+		return state, nil
+	}
+
 	query := `
 		UPDATE api_keys
 		SET
@@ -549,6 +573,41 @@ func (r *apiKeyRepository) UpdateLastUsed(ctx context.Context, id int64, usedAt 
 // IncrementRateLimitUsage atomically increments all rate limit usage counters and initializes
 // window start times via COALESCE if not already set.
 func (r *apiKeyRepository) IncrementRateLimitUsage(ctx context.Context, id int64, cost float64) error {
+	if isSQLiteStorage() && r.sql != nil {
+		now := time.Now().UTC().Truncate(time.Second)
+		dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		res, err := r.sql.ExecContext(ctx, `
+			UPDATE api_keys SET
+				usage_5h = CASE WHEN window_5h_start IS NULL OR window_5h_start <= ? THEN ? ELSE usage_5h + ? END,
+				usage_1d = CASE WHEN window_1d_start IS NULL OR window_1d_start <= ? THEN ? ELSE usage_1d + ? END,
+				usage_7d = CASE WHEN window_7d_start IS NULL OR window_7d_start <= ? THEN ? ELSE usage_7d + ? END,
+				window_5h_start = CASE WHEN window_5h_start IS NULL OR window_5h_start <= ? THEN ? ELSE window_5h_start END,
+				window_1d_start = CASE WHEN window_1d_start IS NULL OR window_1d_start <= ? THEN ? ELSE window_1d_start END,
+				window_7d_start = CASE WHEN window_7d_start IS NULL OR window_7d_start <= ? THEN ? ELSE window_7d_start END,
+				updated_at = CURRENT_TIMESTAMP
+			WHERE id = ? AND deleted_at IS NULL
+		`,
+			now.Add(-service.RateLimitWindow5h), cost, cost,
+			now.Add(-service.RateLimitWindow1d), cost, cost,
+			now.Add(-service.RateLimitWindow7d), cost, cost,
+			now.Add(-service.RateLimitWindow5h), now,
+			now.Add(-service.RateLimitWindow1d), dayStart,
+			now.Add(-service.RateLimitWindow7d), dayStart,
+			id,
+		)
+		if err != nil {
+			return err
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return service.ErrAPIKeyNotFound
+		}
+		return nil
+	}
+
 	_, err := r.sql.ExecContext(ctx, `
 		UPDATE api_keys SET
 			usage_5h = CASE WHEN window_5h_start IS NOT NULL AND window_5h_start + INTERVAL '5 hours' <= NOW() THEN $1 ELSE usage_5h + $1 END,
@@ -565,6 +624,38 @@ func (r *apiKeyRepository) IncrementRateLimitUsage(ctx context.Context, id int64
 
 // ResetRateLimitWindows resets expired rate limit windows atomically.
 func (r *apiKeyRepository) ResetRateLimitWindows(ctx context.Context, id int64) error {
+	if isSQLiteStorage() && r.sql != nil {
+		now := time.Now().UTC().Truncate(time.Second)
+		dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		res, err := r.sql.ExecContext(ctx, `
+			UPDATE api_keys SET
+				usage_5h = CASE WHEN window_5h_start IS NOT NULL AND window_5h_start <= ? THEN 0 ELSE usage_5h END,
+				window_5h_start = CASE WHEN window_5h_start IS NOT NULL AND window_5h_start <= ? THEN ? ELSE window_5h_start END,
+				usage_1d = CASE WHEN window_1d_start IS NOT NULL AND window_1d_start <= ? THEN 0 ELSE usage_1d END,
+				window_1d_start = CASE WHEN window_1d_start IS NOT NULL AND window_1d_start <= ? THEN ? ELSE window_1d_start END,
+				usage_7d = CASE WHEN window_7d_start IS NOT NULL AND window_7d_start <= ? THEN 0 ELSE usage_7d END,
+				window_7d_start = CASE WHEN window_7d_start IS NOT NULL AND window_7d_start <= ? THEN ? ELSE window_7d_start END,
+				updated_at = CURRENT_TIMESTAMP
+			WHERE id = ? AND deleted_at IS NULL
+		`,
+			now.Add(-service.RateLimitWindow5h), now.Add(-service.RateLimitWindow5h), now,
+			now.Add(-service.RateLimitWindow1d), now.Add(-service.RateLimitWindow1d), dayStart,
+			now.Add(-service.RateLimitWindow7d), now.Add(-service.RateLimitWindow7d), dayStart,
+			id,
+		)
+		if err != nil {
+			return err
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return service.ErrAPIKeyNotFound
+		}
+		return nil
+	}
+
 	_, err := r.sql.ExecContext(ctx, `
 		UPDATE api_keys SET
 			usage_5h = CASE WHEN window_5h_start IS NOT NULL AND window_5h_start + INTERVAL '5 hours' <= NOW() THEN 0 ELSE usage_5h END,
@@ -581,6 +672,26 @@ func (r *apiKeyRepository) ResetRateLimitWindows(ctx context.Context, id int64) 
 
 // GetRateLimitData returns the current rate limit usage and window start times for an API key.
 func (r *apiKeyRepository) GetRateLimitData(ctx context.Context, id int64) (result *service.APIKeyRateLimitData, err error) {
+	if isSQLiteStorage() || r.sql == nil {
+		key, err := r.client.APIKey.Query().
+			Where(apikey.IDEQ(id), apikey.DeletedAtIsNil()).
+			Only(ctx)
+		if err != nil {
+			if dbent.IsNotFound(err) {
+				return nil, service.ErrAPIKeyNotFound
+			}
+			return nil, err
+		}
+		return &service.APIKeyRateLimitData{
+			Usage5h:       key.Usage5h,
+			Usage1d:       key.Usage1d,
+			Usage7d:       key.Usage7d,
+			Window5hStart: key.Window5hStart,
+			Window1dStart: key.Window1dStart,
+			Window7dStart: key.Window7dStart,
+		}, nil
+	}
+
 	rows, err := r.sql.QueryContext(ctx, `
 		SELECT usage_5h, usage_1d, usage_7d, window_5h_start, window_1d_start, window_7d_start
 		FROM api_keys

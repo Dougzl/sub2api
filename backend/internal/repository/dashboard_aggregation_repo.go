@@ -183,7 +183,7 @@ func (r *dashboardAggregationRepository) GetAggregationWatermark(ctx context.Con
 func (r *dashboardAggregationRepository) UpdateAggregationWatermark(ctx context.Context, aggregatedAt time.Time) error {
 	query := `
 		INSERT INTO usage_dashboard_aggregation_watermark (id, last_aggregated_at, updated_at)
-		VALUES (1, $1, NOW())
+		VALUES (1, $1, CURRENT_TIMESTAMP)
 		ON CONFLICT (id)
 		DO UPDATE SET last_aggregated_at = EXCLUDED.last_aggregated_at, updated_at = EXCLUDED.updated_at
 	`

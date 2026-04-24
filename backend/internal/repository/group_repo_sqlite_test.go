@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/enttest"
@@ -65,4 +66,50 @@ func TestGroupRepositoryDeleteCascade_SQLiteDoesNotUseForUpdate(t *testing.T) {
 
 	_, err = repo.GetByID(ctx, created.ID)
 	require.ErrorIs(t, err, service.ErrGroupNotFound)
+}
+
+func TestGroupRepositoryGetAccountCount_SQLite(t *testing.T) {
+	setRuntimeStorageEngine("sqlite")
+	t.Cleanup(func() {
+		setRuntimeStorageEngine("")
+	})
+
+	client, db := newGroupSQLiteTestClient(t)
+	ctx := context.Background()
+
+	groupEntity, err := client.Group.Create().
+		SetName("sqlite-count-group").
+		SetPlatform(service.PlatformAnthropic).
+		SetRateMultiplier(1).
+		SetSortOrder(1).
+		SetIsExclusive(false).
+		SetStatus(service.StatusActive).
+		SetSubscriptionType(service.SubscriptionTypeStandard).
+		SetDefaultValidityDays(0).
+		SetClaudeCodeOnly(false).
+		Save(ctx)
+	require.NoError(t, err)
+
+	accountEntity, err := client.Account.Create().
+		SetName("sqlite-count-account").
+		SetPlatform(service.PlatformAnthropic).
+		SetType(service.AccountTypeOAuth).
+		SetStatus(service.StatusActive).
+		SetCredentials(map[string]any{}).
+		SetExtra(map[string]any{}).
+		SetConcurrency(1).
+		SetPriority(1).
+		SetSchedulable(true).
+		SetRateLimitResetAt(time.Now().UTC().Add(5 * time.Minute)).
+		Save(ctx)
+	require.NoError(t, err)
+
+	_, err = db.ExecContext(ctx, `INSERT INTO account_groups (account_id, group_id, priority, created_at) VALUES (?, ?, 1, CURRENT_TIMESTAMP)`, accountEntity.ID, groupEntity.ID)
+	require.NoError(t, err)
+
+	repo := newGroupRepositoryWithSQL(client, db)
+	total, active, err := repo.GetAccountCount(ctx, groupEntity.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), total)
+	require.Equal(t, int64(1), active)
 }

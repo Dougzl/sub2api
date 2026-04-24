@@ -21,7 +21,7 @@ func NewScheduledTestPlanRepository(db *sql.DB) service.ScheduledTestPlanReposit
 func (r *scheduledTestPlanRepository) Create(ctx context.Context, plan *service.ScheduledTestPlan) (*service.ScheduledTestPlan, error) {
 	row := r.db.QueryRowContext(ctx, `
 		INSERT INTO scheduled_test_plans (account_id, model_id, cron_expression, enabled, max_results, auto_recover, next_run_at, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+		VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 		RETURNING id, account_id, model_id, cron_expression, enabled, max_results, auto_recover, last_run_at, next_run_at, created_at, updated_at
 	`, plan.AccountID, plan.ModelID, plan.CronExpression, plan.Enabled, plan.MaxResults, plan.AutoRecover, plan.NextRunAt)
 	return scanPlan(row)
@@ -65,7 +65,7 @@ func (r *scheduledTestPlanRepository) ListDue(ctx context.Context, now time.Time
 func (r *scheduledTestPlanRepository) Update(ctx context.Context, plan *service.ScheduledTestPlan) (*service.ScheduledTestPlan, error) {
 	row := r.db.QueryRowContext(ctx, `
 		UPDATE scheduled_test_plans
-		SET model_id = $2, cron_expression = $3, enabled = $4, max_results = $5, auto_recover = $6, next_run_at = $7, updated_at = NOW()
+		SET model_id = $2, cron_expression = $3, enabled = $4, max_results = $5, auto_recover = $6, next_run_at = $7, updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1
 		RETURNING id, account_id, model_id, cron_expression, enabled, max_results, auto_recover, last_run_at, next_run_at, created_at, updated_at
 	`, plan.ID, plan.ModelID, plan.CronExpression, plan.Enabled, plan.MaxResults, plan.AutoRecover, plan.NextRunAt)
@@ -79,7 +79,7 @@ func (r *scheduledTestPlanRepository) Delete(ctx context.Context, id int64) erro
 
 func (r *scheduledTestPlanRepository) UpdateAfterRun(ctx context.Context, id int64, lastRunAt time.Time, nextRunAt time.Time) error {
 	_, err := r.db.ExecContext(ctx, `
-		UPDATE scheduled_test_plans SET last_run_at = $2, next_run_at = $3, updated_at = NOW() WHERE id = $1
+		UPDATE scheduled_test_plans SET last_run_at = $2, next_run_at = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $1
 	`, id, lastRunAt, nextRunAt)
 	return err
 }
@@ -97,7 +97,7 @@ func NewScheduledTestResultRepository(db *sql.DB) service.ScheduledTestResultRep
 func (r *scheduledTestResultRepository) Create(ctx context.Context, result *service.ScheduledTestResult) (*service.ScheduledTestResult, error) {
 	row := r.db.QueryRowContext(ctx, `
 		INSERT INTO scheduled_test_results (plan_id, status, response_text, error_message, latency_ms, started_at, finished_at, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+		VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)
 		RETURNING id, plan_id, status, response_text, error_message, latency_ms, started_at, finished_at, created_at
 	`, result.PlanID, result.Status, result.ResponseText, result.ErrorMessage, result.LatencyMs, result.StartedAt, result.FinishedAt)
 

@@ -32,6 +32,14 @@ func (r *opsRepository) GetThroughputTrend(ctx context.Context, filter *service.
 	start := filter.StartTime.UTC()
 	end := filter.EndTime.UTC()
 
+	if isSQLiteStorage() {
+		points := fillOpsThroughputBuckets(start, end, bucketSeconds, nil)
+		return &service.OpsThroughputTrendResponse{
+			Bucket: opsBucketLabel(bucketSeconds),
+			Points: points,
+		}, nil
+	}
+
 	usageJoin, usageWhere, usageArgs, next := buildUsageWhere(filter, start, end, 1)
 	errorWhere, errorArgs, _ := buildErrorWhere(filter, start, end, next)
 
@@ -445,6 +453,14 @@ func (r *opsRepository) GetErrorTrend(ctx context.Context, filter *service.OpsDa
 
 	start := filter.StartTime.UTC()
 	end := filter.EndTime.UTC()
+
+	if isSQLiteStorage() {
+		points := fillOpsErrorTrendBuckets(start, end, bucketSeconds, nil)
+		return &service.OpsErrorTrendResponse{
+			Bucket: opsBucketLabel(bucketSeconds),
+			Points: points,
+		}, nil
+	}
 	where, args, _ := buildErrorWhere(filter, start, end, 1)
 	bucketExpr := opsBucketExprForError(bucketSeconds)
 
@@ -558,6 +574,13 @@ func (r *opsRepository) GetErrorDistribution(ctx context.Context, filter *servic
 
 	start := filter.StartTime.UTC()
 	end := filter.EndTime.UTC()
+
+	if isSQLiteStorage() {
+		return &service.OpsErrorDistributionResponse{
+			Total: 0,
+			Items: []*service.OpsErrorDistributionItem{},
+		}, nil
+	}
 	where, args, _ := buildErrorWhere(filter, start, end, 1)
 
 	q := `

@@ -11,6 +11,9 @@ func (r *opsRepository) UpsertHourlyMetrics(ctx context.Context, startTime, endT
 	if r == nil || r.db == nil {
 		return fmt.Errorf("nil ops repository")
 	}
+	if isSQLiteStorage() {
+		return nil
+	}
 	if startTime.IsZero() || endTime.IsZero() || !endTime.After(startTime) {
 		return nil
 	}
@@ -226,6 +229,9 @@ ON CONFLICT (bucket_start, COALESCE(platform, ''), COALESCE(group_id, 0)) DO UPD
 func (r *opsRepository) UpsertDailyMetrics(ctx context.Context, startTime, endTime time.Time) error {
 	if r == nil || r.db == nil {
 		return fmt.Errorf("nil ops repository")
+	}
+	if isSQLiteStorage() {
+		return nil
 	}
 	if startTime.IsZero() || endTime.IsZero() || !endTime.After(startTime) {
 		return nil

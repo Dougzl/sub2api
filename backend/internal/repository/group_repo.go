@@ -509,6 +509,20 @@ func (r *groupRepository) ExistsByIDs(ctx context.Context, ids []int64) (map[int
 
 func (r *groupRepository) GetAccountCount(ctx context.Context, groupID int64) (total int64, active int64, err error) {
 	var rateLimited int64
+	if isSQLiteStorage() {
+		err = scanSingleRow(ctx, r.sql,
+			`SELECT COUNT(*),
+				COALESCE(SUM(CASE WHEN a.status = 'active' AND a.schedulable = true THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN a.status = 'active' AND (
+					a.rate_limit_reset_at > CURRENT_TIMESTAMP OR
+					a.overload_until > CURRENT_TIMESTAMP OR
+					a.temp_unschedulable_until > CURRENT_TIMESTAMP
+				) THEN 1 ELSE 0 END), 0)
+			FROM account_groups ag JOIN accounts a ON a.id = ag.account_id
+			WHERE ag.group_id = $1`,
+			[]any{groupID}, &total, &active, &rateLimited)
+		return
+	}
 	err = scanSingleRow(ctx, r.sql,
 		`SELECT COUNT(*),
 			COUNT(*) FILTER (WHERE a.status = 'active' AND a.schedulable = true),

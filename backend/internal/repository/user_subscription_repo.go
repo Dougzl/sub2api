@@ -340,27 +340,17 @@ func (r *userSubscriptionRepository) ResetMonthlyUsage(ctx context.Context, id i
 // 限额检查已在请求前由 BillingCacheService.CheckBillingEligibility 完成，
 // 此处仅负责记录实际消费，确保消费数据的完整性。
 func (r *userSubscriptionRepository) IncrementUsage(ctx context.Context, id int64, costUSD float64) error {
-	const updateSQL = `
-		UPDATE user_subscriptions us
-		SET
-			daily_usage_usd = us.daily_usage_usd + $1,
-			weekly_usage_usd = us.weekly_usage_usd + $1,
-			monthly_usage_usd = us.monthly_usage_usd + $1,
-			updated_at = NOW()
-		FROM groups g
-		WHERE us.id = $2
-			AND us.deleted_at IS NULL
-			AND us.group_id = g.id
-			AND g.deleted_at IS NULL
-	`
-
 	client := clientFromContext(ctx, r.client)
-	result, err := client.ExecContext(ctx, updateSQL, costUSD, id)
-	if err != nil {
-		return err
-	}
-
-	affected, err := result.RowsAffected()
+	affected, err := client.UserSubscription.Update().
+		Where(
+			usersubscription.IDEQ(id),
+			usersubscription.DeletedAtIsNil(),
+			usersubscription.HasGroupWith(group.DeletedAtIsNil()),
+		).
+		AddDailyUsageUsd(costUSD).
+		AddWeeklyUsageUsd(costUSD).
+		AddMonthlyUsageUsd(costUSD).
+		Save(ctx)
 	if err != nil {
 		return err
 	}

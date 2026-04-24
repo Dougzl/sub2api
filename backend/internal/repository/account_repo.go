@@ -1197,14 +1197,11 @@ func (r *accountRepository) SetTempUnschedulable(ctx context.Context, id int64, 
 }
 
 func (r *accountRepository) ClearTempUnschedulable(ctx context.Context, id int64) error {
-	_, err := r.sql.ExecContext(ctx, `
-		UPDATE accounts
-		SET temp_unschedulable_until = NULL,
-			temp_unschedulable_reason = NULL,
-			updated_at = NOW()
-		WHERE id = $1
-			AND deleted_at IS NULL
-	`, id)
+	_, err := r.client.Account.Update().
+		Where(dbaccount.IDEQ(id), dbaccount.DeletedAtIsNil()).
+		ClearTempUnschedulableUntil().
+		SetTempUnschedulableReason("").
+		Save(ctx)
 	if err != nil {
 		return err
 	}

@@ -308,7 +308,7 @@ INSERT INTO ops_job_heartbeats (
   last_result,
   updated_at
 ) VALUES (
-  $1,$2,$3,$4,$5,$6,$7,NOW()
+  $1,$2,$3,$4,$5,$6,$7,CURRENT_TIMESTAMP
 )
 ON CONFLICT (job_name) DO UPDATE SET
   last_run_at = COALESCE(EXCLUDED.last_run_at, ops_job_heartbeats.last_run_at),
@@ -326,7 +326,7 @@ ON CONFLICT (job_name) DO UPDATE SET
     WHEN EXCLUDED.last_success_at IS NOT NULL THEN COALESCE(EXCLUDED.last_result, ops_job_heartbeats.last_result)
     ELSE ops_job_heartbeats.last_result
   END,
-  updated_at = NOW()`
+  updated_at = CURRENT_TIMESTAMP`
 
 	_, err := r.db.ExecContext(
 		ctx,

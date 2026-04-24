@@ -769,12 +769,14 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	}
 
 	nearestPool := selectNearestRecoveryCandidates(candidates, openAINearestRecoveryPoolSize, req.RequestedModel)
-	topK := len(nearestPool)
+	topK := s.service.openAIWSLBTopK()
 	if topK <= 0 {
 		topK = 1
 	}
+	topCandidates := selectTopKOpenAICandidates(nearestPool, topK)
+	topK = len(topCandidates)
 	startIdx := int((s.rrCursor.Add(1) - 1) % uint64(topK))
-	selectionOrder := rotateOpenAICandidateOrder(nearestPool, req.RequestedModel, startIdx)
+	selectionOrder := rotateOpenAICandidateOrder(topCandidates, req.RequestedModel, startIdx)
 
 	for i := 0; i < len(selectionOrder); i++ {
 		candidate := selectionOrder[i]
